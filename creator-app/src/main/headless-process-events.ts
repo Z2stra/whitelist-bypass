@@ -58,8 +58,8 @@ export function parseHeadlessProcessEvent(rawLine: string): HeadlessProcessEvent
     return { type: 'tunnel-connected' };
   }
 
-  const fatal = valueAfterMarker(line, '[FATAL]');
-  if (fatal) {
+  if (line.includes('[FATAL]')) {
+    const fatal = valueAfterMarker(line, '[FATAL]') || 'fatal error';
     return { type: 'fatal', message: redactSensitiveText(fatal) };
   }
 
