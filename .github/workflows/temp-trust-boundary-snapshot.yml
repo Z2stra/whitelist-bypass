@@ -36,6 +36,19 @@ jobs:
       - name: Reconstruct and validate patch
         shell: bash
         run: |
+          while read -r expected file; do
+            actual="$(git hash-object "$file")"
+            echo "$file expected=$expected actual=$actual"
+            test "$actual" = "$expected"
+          done <<'HASHES'
+          f2cfad2ce5b9271e39b69c8c6153f40c922b05b9 .github/patches/trust-boundary.part-aa
+          d81c064b061347f17b2b1177dc816d93310f329a .github/patches/trust-boundary.part-ab
+          4045eb0526b87435cf73dcf214d9addcab1de7e0 .github/patches/trust-boundary.part-ac
+          544325ebb9da0d8af951a53cf58cb929fcc52b7f .github/patches/trust-boundary.part-ad
+          42338a198ac8ee463c04d719a199dc27b3dccce8 .github/patches/trust-boundary.part-ae
+          e586e4c9503c8e3109db117a5b99c4a07f078bfc .github/patches/trust-boundary.part-af
+          a72f1e68c6ca9f66225f7b4f65167ef908f492af .github/patches/trust-boundary.part-ag
+          HASHES
           cat .github/patches/trust-boundary.part-* | base64 --decode > /tmp/trust-boundary.patch
           echo "9a0ba1480311d790c0ed688fe57d92996f5a5ceb3dc5a1467b5c40b3493ab2f8  /tmp/trust-boundary.patch" | sha256sum --check
           git apply --check /tmp/trust-boundary.patch
