@@ -31,6 +31,17 @@ function parsePositiveInteger(raw: string, label: string): number {
 }
 
 export function validateBotSettings(settings: BotSettings): ValidatedBotSettings {
+  if (!settings || typeof settings !== 'object') {
+    throw new BotSecurityError('INVALID_SETTINGS', 'VK bot settings are required');
+  }
+  if (
+    typeof settings.token !== 'string' ||
+    typeof settings.groupId !== 'string' ||
+    typeof settings.userId !== 'string'
+  ) {
+    throw new BotSecurityError('INVALID_SETTINGS', 'VK bot settings must contain string values');
+  }
+
   const token = settings.token.trim();
   if (!token) {
     throw new BotSecurityError('INVALID_SETTINGS', 'VK community token is required');
