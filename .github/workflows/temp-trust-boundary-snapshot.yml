@@ -1,0 +1,27 @@
+name: Temporary trust-boundary source snapshot
+
+on:
+  push:
+    branches:
+      - agent/harden-electron-trust-boundary
+    paths:
+      - ".github/workflows/temp-trust-boundary-snapshot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trust-boundary-source-${{ github.sha }}
+          retention-days: 1
+          include-hidden-files: true
+          path: |
+            creator-app/**
+            PRODUCT.md
+            CHANGELOG.md
