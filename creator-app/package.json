@@ -4,6 +4,8 @@
   "main": "dist/main/index.js",
   "scripts": {
     "build": "tsc",
+    "lint": "tsc --noEmit -p tsconfig.test.json",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/bot/security.test.js .test-dist/bot/bot-manager.test.js",
     "start": "tsc && electron .",
     "start:dev": "electron ."
   },
