@@ -13,12 +13,18 @@ All notable project changes made as part of the staged control-plane work are re
 - Added a WLB2 envelope draft with an external random `keyId` to avoid circular per-device key selection.
 - Added the official VK API PING/PONG POC checklist and results template.
 
+### Android
+
+- Scoped the Quick Settings `VpnTileService` declaration to API 24 without raising the application `minSdk` from 23.
+- Updated active foreground-service notifications through `startForeground`, closing Android 13 notification-permission lint errors without introducing a user-facing notification permission request.
+- Added a reproducible Android CI gate for unit tests, `lintDebug`, debug APK assembly and report/artifact retention.
+
 ### Security status
 
-- No security implementation is claimed by this documentation-only milestone.
+- No Creator control-plane security implementation is claimed by this Android baseline milestone.
 - Real VK credentials, platform cookies and proxy passwords remain prohibited until the pre-POC security gate in `PRODUCT.md` is implemented, tested and reviewed.
 
 ### Known baseline debt
 
-- The upstream Android debug APK builds, but Android lint is not yet green. The complete report must be classified before the POC implementation is accepted.
-- Creator quality scripts and security regression tests are part of the next code milestone, not this documentation change.
+- Android has no blocking lint errors; 69 non-blocking warnings remain classified as technical debt.
+- Creator quality scripts and security regression tests remain part of the next code milestone.
