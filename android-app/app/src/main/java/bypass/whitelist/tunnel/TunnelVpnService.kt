@@ -88,8 +88,7 @@ class TunnelVpnService : VpnService() {
     }
 
     fun updateStatus(status: VpnStatus) {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(NOTIFICATION_ID, buildNotification(getString(status.labelRes)))
+        startForeground(NOTIFICATION_ID, buildNotification(getString(status.labelRes)))
         TunnelServiceState.vpnStatusCallback?.invoke(status)
         TunnelServiceState.requestTileRefresh(this)
     }
