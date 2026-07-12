@@ -1,6 +1,10 @@
 name: Temporary apply verified tab-manager patch
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/temp-source-snapshot.yml"
+      - ".github/patches/pr4-tab-manager.patch"
   push:
     branches:
       - agent/separate-headless-events
@@ -11,8 +15,13 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: temp-pr4-tab-manager
+  cancel-in-progress: true
+
 jobs:
   apply-and-verify:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/separate-headless-events'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -31,6 +40,7 @@ jobs:
 
       - name: Apply staged patch
         run: |
+          test -f .github/patches/pr4-tab-manager.patch
           git apply --check .github/patches/pr4-tab-manager.patch
           git apply .github/patches/pr4-tab-manager.patch
           rm .github/patches/pr4-tab-manager.patch
