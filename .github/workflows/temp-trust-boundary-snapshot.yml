@@ -1,6 +1,12 @@
 name: Temporary trust-boundary source snapshot
 
 on:
+  pull_request:
+    paths:
+      - "creator-app/**"
+      - "PRODUCT.md"
+      - "CHANGELOG.md"
+      - ".github/workflows/temp-trust-boundary-snapshot.yml"
   push:
     branches:
       - agent/harden-electron-trust-boundary
