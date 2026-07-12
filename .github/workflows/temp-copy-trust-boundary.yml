@@ -1,0 +1,73 @@
+name: Temporary copy verified trust-boundary files
+
+on:
+  push:
+    branches:
+      - agent/harden-electron-trust-boundary-v2
+    paths:
+      - ".github/workflows/temp-copy-trust-boundary.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  copy-test-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/harden-electron-trust-boundary-v2
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: creator-app/package-lock.json
+
+      - name: Copy only reviewed source files
+        run: |
+          git fetch origin agent/harden-electron-trust-boundary
+          git checkout origin/agent/harden-electron-trust-boundary -- \
+            .github/workflows/creator-quality.yml \
+            creator-app/index.html \
+            creator-app/package.json \
+            creator-app/src/types.ts \
+            creator-app/src/preload/index.ts \
+            creator-app/src/main/ipc.ts \
+            creator-app/src/main/window.ts \
+            creator-app/src/main/trust-policy.ts \
+            creator-app/src/main/trust-policy.test.ts \
+            creator-app/src/main/trust-boundary-static.test.ts \
+            creator-app/src/renderer/dom.ts \
+            creator-app/tools/smoke-electron.js \
+            PRODUCT.md \
+            CHANGELOG.md
+
+      - name: Build and regression tests
+        working-directory: creator-app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npm run lint
+          npm test
+
+      - name: Electron renderer smoke test
+        working-directory: creator-app
+        run: xvfb-run -a npm run smoke:electron
+
+      - name: Commit clean verified tree
+        run: |
+          git rm .github/workflows/temp-copy-trust-boundary.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .github/workflows/creator-quality.yml \
+            creator-app \
+            PRODUCT.md \
+            CHANGELOG.md \
+            docs/security/electron-trust-boundary.md
+          git commit -m "security(creator): harden Electron trust boundary"
+          git push origin HEAD:agent/harden-electron-trust-boundary-v2
