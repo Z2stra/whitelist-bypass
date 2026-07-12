@@ -19,12 +19,24 @@ All notable project changes made as part of the staged control-plane work are re
 - Updated active foreground-service notifications through `startForeground`, closing Android 13 notification-permission lint errors without introducing a user-facing notification permission request.
 - Added a reproducible Android CI gate for unit tests, `lintDebug`, debug APK assembly and report/artifact retention.
 
+### Creator VK transport security
+
+- Made the VK user allowlist mandatory and restricted commands to an allowlisted user's private dialog.
+- Moved the community access token from request URLs into POST form bodies.
+- Added HTTP status and JSON validation, bounded API/Long Poll timeouts and request cancellation.
+- Added generation-based Stop → Start lifecycle isolation and bounded exponential retry/backoff with jitter.
+- Stopped logging bot settings, Long Poll server/key, incoming message text and join-link values in `BotManager`.
+- Made `messages.send` failures observable to callers instead of swallowing them.
+- Added safe error formatting and regression coverage for tokens, authorization headers, cookies, proxy credentials, links and room/session identifiers.
+- Added reproducible Creator CI for Node.js 22 build, static type-check and unit/regression tests.
+
 ### Security status
 
-- No Creator control-plane security implementation is claimed by this Android baseline milestone.
-- Real VK credentials, platform cookies and proxy passwords remain prohibited until the pre-POC security gate in `PRODUCT.md` is implemented, tested and reviewed.
+- The VK transport hardening subset is implemented and tested.
+- Real VK credentials, platform cookies and proxy passwords remain prohibited until the remaining pre-POC security gate is complete: typed process events, POC-only handling, IPC validation, remote-content hardening and protected secret storage.
 
 ### Known baseline debt
 
 - Android has no blocking lint errors; 69 non-blocking warnings remain classified as technical debt.
-- Creator quality scripts and security regression tests remain part of the next code milestone.
+- The Electron renderer/webview trust boundary and long-lived renderer secret storage remain open security work.
+- Creator dependency audit findings remain a separate dependency-upgrade task; no automatic `npm audit fix` was applied.
