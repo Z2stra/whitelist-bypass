@@ -1,6 +1,9 @@
 name: Temporary apply verified trust-boundary patch
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/temp-trust-boundary-snapshot.yml"
   push:
     branches:
       - agent/harden-electron-trust-boundary
