@@ -62,6 +62,7 @@ export enum IPC {
   CLEAR_COOKIES = 'clear-cookies',
   EXPORT_COOKIES_ZIP = 'export-cookies-zip',
   RELAY_LOG = 'relay-log',
+  HEADLESS_EVENT = 'headless-event',
   CREATE_BOT_TAB = 'create-bot-tab',
   CLOSE_BOT_TAB = 'close-bot-tab',
   BOT_ERROR = 'bot-error',
