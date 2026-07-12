@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { TabManager } from './tab-manager';
 import { BotManager } from '../bot/bot-manager';
+import { safeErrorMessage } from '../bot/security';
 import { IPC } from '../constants';
 import { TunnelMode, Platform, BotSettings, HeadlessStartArgs, UpstreamProxy } from '../types';
 
@@ -35,47 +36,61 @@ export function registerIpcHandlers(tabManager: TabManager): void {
     tabManager.deleteTab(tabId);
   });
 
-  ipcMain.handle(IPC.START_BOT, (_e, settings: BotSettings) => {
+  ipcMain.handle(IPC.START_BOT, async (_e, settings: BotSettings) => {
     if (tabManager.botManager) {
       tabManager.botManager.stop();
+      tabManager.botManager = null;
     }
-    const bm = new BotManager(
-      settings,
-      async (tabConfig) => {
-        if (!tabManager.mainWindow || tabManager.mainWindow.isDestroyed()) return;
-        const tabId = 'bot-tab-' + Date.now();
-        const tab = await tabManager.getOrCreateTab(tabId);
-        tab.tunnelMode = tabConfig.mode;
-        tab.platform = tabConfig.platform || Platform.VK;
-        tab.peerId = tabConfig.peerId;
-        tab.isBot = true;
-        tabManager.addBotTab(tabId);
-        tabManager.mainWindow.webContents.send(IPC.CREATE_BOT_TAB, {
-          tabId,
-          mode: tabConfig.mode,
-          peerId: tabConfig.peerId,
-          platform: tabConfig.platform || Platform.VK,
-          joinTarget: tabConfig.joinTarget,
-        });
-        console.log('[BOT] Created tab:', tabId, 'mode:', tabConfig.mode, 'platform:', tabConfig.platform);
-      },
-      () => tabManager.getTabList(),
-      (tabId) => {
-        tabManager.deleteTab(tabId);
-        console.log('[BOT] Closed tab:', tabId);
+
+    try {
+      const bm = new BotManager(
+        settings,
+        async (tabConfig) => {
+          if (!tabManager.mainWindow || tabManager.mainWindow.isDestroyed()) return;
+          const tabId = 'bot-tab-' + Date.now();
+          const tab = await tabManager.getOrCreateTab(tabId);
+          tab.tunnelMode = tabConfig.mode;
+          tab.platform = tabConfig.platform || Platform.VK;
+          tab.peerId = tabConfig.peerId;
+          tab.isBot = true;
+          tabManager.addBotTab(tabId);
+          tabManager.mainWindow.webContents.send(IPC.CREATE_BOT_TAB, {
+            tabId,
+            mode: tabConfig.mode,
+            peerId: tabConfig.peerId,
+            platform: tabConfig.platform || Platform.VK,
+            joinTarget: tabConfig.joinTarget,
+          });
+          console.log('[BOT] Created tab; mode:', tabConfig.mode, 'platform:', tabConfig.platform);
+        },
+        () => tabManager.getTabList(),
+        (tabId) => {
+          tabManager.deleteTab(tabId);
+          console.log('[BOT] Closed tab');
+          if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
+            tabManager.mainWindow.webContents.send(IPC.CLOSE_BOT_TAB, { tabId });
+          }
+        },
+      );
+      bm.onError = (msg: string) => {
         if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
-          tabManager.mainWindow.webContents.send(IPC.CLOSE_BOT_TAB, { tabId });
+          tabManager.mainWindow.webContents.send(IPC.BOT_ERROR, msg);
         }
-      },
-    );
-    bm.onError = (msg: string) => {
-      if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
-        tabManager.mainWindow.webContents.send(IPC.BOT_ERROR, msg);
+      };
+      tabManager.botManager = bm;
+      const started = await bm.start();
+      if (!started) {
+        if (tabManager.botManager === bm) tabManager.botManager = null;
+        return { success: false };
       }
-    };
-    tabManager.botManager = bm;
-    bm.start();
-    return { success: true };
+      return { success: true };
+    } catch (error) {
+      const message = safeErrorMessage(error, 'VK bot configuration');
+      if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
+        tabManager.mainWindow.webContents.send(IPC.BOT_ERROR, message);
+      }
+      return { success: false, error: message };
+    }
   });
 
   ipcMain.handle(IPC.STOP_BOT, () => {

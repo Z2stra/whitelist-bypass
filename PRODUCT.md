@@ -9,6 +9,7 @@
 - Android client: existing `android-app` using `VpnService` and the headless Go/Pion path.
 - The unmodified Windows Creator and Android debug APK have been built and smoke-tested locally on Windows.
 - Android baseline CI now passes `test`, `lintDebug`, and `assembleDebug`; 69 non-blocking lint warnings remain classified as technical debt.
+- Creator CI now passes TypeScript build, static type-check and VK transport regression tests on Node.js 22.
 - No production credentials, tokens, cookies, proxy passwords or signing keys belong in Git or public CI.
 
 ## Mandatory architecture gate
@@ -38,14 +39,14 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 
 ### Pre-POC security gate — required before real VK credentials
 
-- [ ] Remove token/settings logging from the VK transport.
-- [ ] Require an explicit VK user allowlist and bind commands to the private dialog (`peer_id == from_id`).
-- [ ] Move VK API credentials out of request URLs.
-- [ ] Add HTTP status checks, bounded timeouts, request cancellation and bounded retry/backoff.
-- [ ] Make Stop → Start unable to leave a stale Long Poll loop running.
-- [ ] Propagate `messages.send` failures to callers.
+- [x] Remove token/settings logging from the VK transport.
+- [x] Require an explicit VK user allowlist and bind commands to the private dialog (`peer_id == from_id`).
+- [x] Move VK API credentials out of request URLs.
+- [x] Add HTTP status checks, bounded timeouts, request cancellation and bounded retry/backoff.
+- [x] Make Stop → Start unable to leave a stale Long Poll loop running.
+- [x] Propagate `messages.send` failures to callers.
 - [ ] Separate functional process events (for example a join link) from redacted diagnostic logs.
-- [ ] Cover token, Long Poll key, Authorization headers, proxy credentials, platform links, room IDs and cookie material in log-redaction tests.
+- [x] Cover token, Long Poll key, Authorization headers, proxy credentials, platform links, room IDs and cookie material in log-redaction tests.
 - [ ] Restrict the POC handler to `WLB-POC/1` PING/PONG; operational join/start/close commands remain disabled in POC mode.
 - [ ] Validate Electron IPC senders and arguments used by the POC.
 - [ ] Remove Node privileges from remote web content and restrict navigation, popups and permissions to explicit platform origins.
@@ -117,4 +118,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: Phase 0 documentation established; Android baseline lint errors are closed and its test/lint/assemble CI is green. Pre-POC security implementation has not yet been accepted. Official VK API POC has not started. Real credentials must not be entered until the pre-POC security gate is reviewed and verified.**
+**Current status: Phase 0 documentation is established. Android baseline checks are green. The VK BotManager transport hardening items listed above are implemented and covered by Creator CI, but the pre-POC security gate remains open because typed process events, POC-only handling, IPC validation, remote-content hardening and protected secret storage are not complete. Official VK API POC has not started. Real credentials must not be entered yet.**
