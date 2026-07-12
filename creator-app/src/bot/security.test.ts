@@ -7,8 +7,17 @@ import {
   safeErrorMessage,
   validateBotSettings,
 } from './security';
+import { BotSettings } from '../types';
 
 test('validateBotSettings requires token, group ID, and a non-empty allowlist', () => {
+  assert.throws(
+    () => validateBotSettings(null as unknown as BotSettings),
+    /settings are required/,
+  );
+  assert.throws(
+    () => validateBotSettings({ token: 'token', groupId: 42, userId: '123' } as unknown as BotSettings),
+    /must contain string values/,
+  );
   assert.throws(
     () => validateBotSettings({ token: '', groupId: '42', userId: '123' }),
     /community token is required/,
