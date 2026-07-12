@@ -45,7 +45,7 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [x] Add HTTP status checks, bounded timeouts, request cancellation and bounded retry/backoff.
 - [x] Make Stop → Start unable to leave a stale Long Poll loop running.
 - [x] Propagate `messages.send` failures to callers.
-- [ ] Separate functional process events (for example a join link) from redacted diagnostic logs.
+- [x] Separate functional process events (for example a join link) from redacted diagnostic logs.
 - [x] Cover token, Long Poll key, Authorization headers, proxy credentials, platform links, room IDs and cookie material in log-redaction tests.
 - [ ] Restrict the POC handler to `WLB-POC/1` PING/PONG; operational join/start/close commands remain disabled in POC mode.
 - [ ] Validate Electron IPC senders and arguments used by the POC.
@@ -118,4 +118,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: Phase 0 documentation is established. Android baseline checks are green. The VK BotManager transport hardening items listed above are implemented and covered by Creator CI, but the pre-POC security gate remains open because typed process events, POC-only handling, IPC validation, remote-content hardening and protected secret storage are not complete. Official VK API POC has not started. Real credentials must not be entered yet.**
+**Current status: Phase 0 documentation is established. Android baseline checks are green. VK BotManager transport hardening and typed headless process events are implemented and covered by Creator CI. The pre-POC security gate remains open because POC-only handling, IPC validation, remote-content hardening and protected secret storage are not complete. Official VK API POC has not started. Real credentials must not be entered yet.**

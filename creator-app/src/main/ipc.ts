@@ -110,7 +110,7 @@ export function registerIpcHandlers(tabManager: TabManager): void {
   });
 
   ipcMain.handle(IPC.SEND_BOT_CALL_LINK, (_e, tabId: string, link: string) => {
-    tabManager.sendBotCallLink(tabId, link);
+    return tabManager.sendBotCallLink(tabId, link);
   });
 
   ipcMain.handle(IPC.EXPORT_COOKIES_ZIP, async () => {

@@ -16,7 +16,15 @@ import {
   detachLoginWebview,
 } from './dom';
 import { VK_IM_URL, TELEMOST_URL } from '../constants';
-import { Platform, Bridge, BotTabData, LogPanel, TunnelMode, HeadlessMode } from '../types';
+import {
+  Platform,
+  Bridge,
+  BotTabData,
+  LogPanel,
+  TunnelMode,
+  HeadlessMode,
+  HeadlessProcessEvent,
+} from '../types';
 
 declare const window: Window & { bridge: Bridge };
 
@@ -194,6 +202,10 @@ function init(): void {
 
   window.bridge.onRelayLog((tabId: string, msg: string) => {
     tm.appendRelayLog(tabId, msg);
+  });
+
+  window.bridge.onHeadlessEvent((tabId: string, event: HeadlessProcessEvent) => {
+    tm.handleHeadlessEvent(tabId, event);
   });
 
   window.bridge.onBotError((msg: string) => {

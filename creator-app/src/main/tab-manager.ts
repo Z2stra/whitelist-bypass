@@ -15,6 +15,7 @@ import {
   HeadlessStartArgs,
   HeadlessMode,
   UpstreamProxy,
+  HeadlessProcessEvent,
 } from '../types';
 import {
   INITIAL_PORT_BASE,
@@ -36,8 +37,15 @@ import {
   LOG_CAPTURE_SNIPPET,
 } from '../constants';
 import { BotManager } from '../bot/bot-manager';
+import { redactSensitiveText } from '../bot/security';
 import { buildStoredZip } from './util/zip';
 import { resolveResourcePath, binaryName } from './util/paths';
+import { classifyHeadlessProcessLine, ProcessLineBuffer } from './headless-process-events';
+
+interface ProcessOutputOptions {
+  headless?: boolean;
+  inspect?: (msg: string) => void;
+}
 
 export class TabManager {
   private tabs = new Map<string, TabState>();
@@ -186,33 +194,57 @@ export class TabManager {
     }
   }
 
+  private sendHeadlessEvent(tabId: string, event: HeadlessProcessEvent): void {
+    if (this._mainWindow && !this._mainWindow.isDestroyed()) {
+      this._mainWindow.webContents.send(IPC.HEADLESS_EVENT, { tabId, event });
+    }
+  }
+
   private attachProcessOutput(
     proc: ChildProcess,
     tabId: string,
-    inspect?: (msg: string) => void,
+    options: ProcessOutputOptions = {},
   ): void {
-    const onData = (data: Buffer) => {
-      data
-        .toString()
-        .trim()
-        .split('\n')
-        .forEach((msg) => {
-          if (!msg) return;
-          console.log(`[relay:${tabId}]`, msg);
-          this.sendLog(tabId, msg);
-          if (inspect) inspect(msg);
-        });
+    const processLine = (rawLine: string): void => {
+      const msg = rawLine.trim();
+      if (!msg) return;
+
+      options.inspect?.(msg);
+
+      let diagnostic = redactSensitiveText(msg);
+      if (options.headless) {
+        const classified = classifyHeadlessProcessLine(msg);
+        diagnostic = classified.diagnostic;
+        if (classified.event) this.sendHeadlessEvent(tabId, classified.event);
+      }
+
+      console.log(`[process:${tabId}]`, diagnostic);
+      this.sendLog(tabId, diagnostic);
     };
-    proc.stdout?.on('data', onData);
-    proc.stderr?.on('data', onData);
+
+    const attachStream = (stream: NodeJS.ReadableStream | null | undefined): void => {
+      if (!stream) return;
+      const buffer = new ProcessLineBuffer();
+      stream.on('data', (data: Buffer | string) => {
+        buffer.push(data).forEach(processLine);
+      });
+      const flush = (): void => {
+        buffer.flush().forEach(processLine);
+      };
+      stream.on('end', flush);
+      stream.on('close', flush);
+    };
+
+    attachStream(proc.stdout);
+    attachStream(proc.stderr);
   }
 
-  sendBotCallLink(tabId: string, link: string): void {
+  async sendBotCallLink(tabId: string, link: string): Promise<void> {
     if (!this.botTabIds.has(tabId) || !this._botManager) return;
     const tab = this.tabs.get(tabId);
     if (!tab || tab.peerId == null) return;
-    console.log(`[MAIN] Headless call link for bot tab ${tabId}:`, link);
-    this._botManager.sendMessage(tab.peerId, link);
+    console.log(`[MAIN] Sending headless result for bot tab ${tabId}`);
+    await this._botManager.sendMessage(tab.peerId, link);
   }
 
   setUpstreamProxy(proxy: UpstreamProxy): void {
@@ -376,15 +408,18 @@ export class TabManager {
     });
     tab.relay = proc;
     let sawAuthFailure = false;
-    this.attachProcessOutput(proc, tabId, (msg) => {
-      if (
-        msg.includes('status 401') ||
-        msg.includes('"UnauthorizedError"') ||
-        msg.includes('"error":"unauthorized') ||
-        msg.includes('empty access_token')
-      ) {
-        sawAuthFailure = true;
-      }
+    this.attachProcessOutput(proc, tabId, {
+      headless: true,
+      inspect: (msg) => {
+        if (
+          msg.includes('status 401') ||
+          msg.includes('"UnauthorizedError"') ||
+          msg.includes('"error":"unauthorized') ||
+          msg.includes('empty access_token')
+        ) {
+          sawAuthFailure = true;
+        }
+      },
     });
     proc.on('close', async (code) => {
       this.sendLog(tabId, `Headless exited with code ${code}`);

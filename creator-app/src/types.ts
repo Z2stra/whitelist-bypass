@@ -102,6 +102,19 @@ export interface HeadlessStartArgs {
   target?: string;
 }
 
+export type HeadlessProcessEvent =
+  | { type: 'call-created' }
+  | { type: 'join-link'; link: string }
+  | { type: 'turn'; value: string }
+  | { type: 'protocol'; value: string }
+  | { type: 'tunnel-connected' }
+  | { type: 'fatal'; message: string };
+
+export interface HeadlessProcessEventData {
+  tabId: string;
+  event: HeadlessProcessEvent;
+}
+
 export interface Webview extends Electron.WebviewTag {
   getURL(): string;
   setAudioMuted(muted: boolean): void;
@@ -144,6 +157,7 @@ export interface RelayLogData {
 
 export interface Bridge {
   onRelayLog(cb: (tabId: string, msg: string) => void): void;
+  onHeadlessEvent(cb: (tabId: string, event: HeadlessProcessEvent) => void): void;
   getHookCode(tabId: string, url: string): Promise<string>;
   setTunnelMode(tabId: string, mode: string, platform?: string): Promise<void>;
   startRelay(tabId: string): Promise<void>;

@@ -8,8 +8,9 @@ import {
   Bridge,
   HeadlessMode,
   HeadlessStartArgs,
+  HeadlessProcessEvent,
 } from '../types';
-import { HeadlessLogMarker } from '../constants';
+import { applyHeadlessProcessEvent } from './headless-event-state';
 
 declare const window: Window & { bridge: Bridge };
 
@@ -176,9 +177,7 @@ export class RendererTabManager {
     const tab = this.tabs[tabId];
     if (!tab) return;
     tab.relayLogs += (tab.relayLogs ? '\n' : '') + msg;
-    let rendered = false;
-    if (tab.headless) rendered = this.parseHeadlessLog(tabId, msg);
-    if (tabId === this.activeTabId && !rendered) {
+    if (tabId === this.activeTabId) {
       const el = document.getElementById('relayLog');
       if (el) {
         if (el.textContent!.length > 0) el.textContent += '\n';
@@ -188,41 +187,19 @@ export class RendererTabManager {
     }
   }
 
-  private parseHeadlessLog(tabId: string, msg: string): boolean {
+  handleHeadlessEvent(tabId: string, event: HeadlessProcessEvent): void {
     const tab = this.tabs[tabId];
-    if (!tab) return false;
-    const trimmed = msg.trim();
-    let changed = false;
+    if (!tab) return;
 
-    if (trimmed === HeadlessLogMarker.CALL_CREATED) {
-      tab.callInfo = {};
-      tab.headlessStatus = 'Call created';
-      changed = true;
+    const result = applyHeadlessProcessEvent(tab, event);
+    if (result.botReply) {
+      void window.bridge.sendBotCallLink(tabId, result.botReply).catch(() => {
+        tab.headlessStatus = 'Failed to send bot response';
+        if (tabId === this.activeTabId) this.onRender();
+      });
     }
-    if (trimmed.includes(HeadlessLogMarker.JOIN_LINK) && tab.callInfo) {
-      tab.callInfo.joinLink = trimmed.split(HeadlessLogMarker.JOIN_LINK)[1].trim();
-      if (tab.isBot) {
-        const reply = tab.joinedByLink ? 'Joined successfully' : tab.callInfo.joinLink;
-        window.bridge.sendBotCallLink(tabId, reply);
-      }
-      changed = true;
-    }
-    if (trimmed.includes(HeadlessLogMarker.TURN) && tab.callInfo) {
-      tab.callInfo.turn = trimmed.split(HeadlessLogMarker.TURN)[1].trim();
-      changed = true;
-    }
-    if (trimmed.includes(HeadlessLogMarker.PROTOCOL) && tab.callInfo) {
-      tab.callInfo.protocol = trimmed.split(HeadlessLogMarker.PROTOCOL)[1].trim();
-      changed = true;
-    }
-    if (trimmed.includes('[FATAL]')) {
-      const fatalMessage = trimmed.split('[FATAL]')[1]?.trim() || 'fatal error';
-      tab.headlessStatus = 'Disconnected: ' + fatalMessage;
-      tab.tunnelConnected = false;
-      changed = true;
-    }
-    if (changed && tabId === this.activeTabId) this.onRender();
-    return changed;
+
+    if (result.changed && tabId === this.activeTabId) this.onRender();
   }
 
   setTunnelMode(mode: string): void {

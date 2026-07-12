@@ -1,9 +1,13 @@
 import { ipcRenderer } from 'electron';
 import { IPC } from '../constants';
+import type { HeadlessProcessEvent } from '../types';
 
 (window as any).bridge = {
   onRelayLog(cb: (tabId: string, msg: string) => void) {
     ipcRenderer.on(IPC.RELAY_LOG, (_e, data) => cb(data.tabId, data.msg));
+  },
+  onHeadlessEvent(cb: (tabId: string, event: HeadlessProcessEvent) => void) {
+    ipcRenderer.on(IPC.HEADLESS_EVENT, (_e, data) => cb(data.tabId, data.event));
   },
   getHookCode(tabId: string, url: string) {
     return ipcRenderer.invoke(IPC.GET_HOOK_CODE, tabId, url);
