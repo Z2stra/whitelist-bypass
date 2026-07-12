@@ -29,11 +29,14 @@ All notable project changes made as part of the staged control-plane work are re
 - Made `messages.send` failures observable to callers instead of swallowing them.
 - Added safe error formatting and regression coverage for tokens, authorization headers, cookies, proxy credentials, links and room/session identifiers.
 - Added reproducible Creator CI for Node.js 22 build, static type-check and unit/regression tests.
+- Moved headless creator marker parsing into the main process and exposed typed functional events through a dedicated IPC channel.
+- Kept real join links and TURN values in the authorized functional path while replacing them with redacted placeholders in console, renderer and saved diagnostic logs.
+- Added stream line buffering and regression tests for split output chunks, terminal flush, typed renderer state and bot replies.
 
 ### Security status
 
-- The VK transport hardening subset is implemented and tested.
-- Real VK credentials, platform cookies and proxy passwords remain prohibited until the remaining pre-POC security gate is complete: typed process events, POC-only handling, IPC validation, remote-content hardening and protected secret storage.
+- The VK transport hardening and typed headless process-event subsets are implemented and tested.
+- Real VK credentials, platform cookies and proxy passwords remain prohibited until the remaining pre-POC security gate is complete: POC-only handling, IPC validation, remote-content hardening and protected secret storage.
 
 ### Known baseline debt
 
