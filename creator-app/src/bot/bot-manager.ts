@@ -155,13 +155,18 @@ export class BotManager {
     this.activeRequests.add(controller);
 
     try {
-      const response = await this.fetchFn(url, { ...init, signal: controller.signal });
+      const response = await this.fetchFn(url, {
+        ...init,
+        signal: controller.signal,
+        redirect: 'error',
+      });
       if (!response.ok) {
         throw new BotSecurityError('HTTP_ERROR', `${operation} returned HTTP ${response.status}`);
       }
       try {
         return await response.json();
-      } catch (_) {
+      } catch (error) {
+        if (timedOut || controller.signal.aborted) throw error;
         throw new BotSecurityError('INVALID_RESPONSE', `${operation} returned invalid JSON`);
       }
     } catch (error) {
