@@ -1,6 +1,12 @@
 name: Temporary creator source snapshot
 
 on:
+  pull_request:
+    paths:
+      - "creator-app/**"
+      - "PRODUCT.md"
+      - "CHANGELOG.md"
+      - ".github/workflows/temp-source-snapshot.yml"
   push:
     branches:
       - agent/separate-headless-events
