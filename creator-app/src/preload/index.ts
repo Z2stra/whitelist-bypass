@@ -1,8 +1,15 @@
 import { ipcRenderer } from 'electron';
 import { IPC } from '../constants';
-import type { HeadlessProcessEvent } from '../types';
+import type {
+  BotSettings,
+  BotTabData,
+  Bridge,
+  HeadlessProcessEvent,
+  HeadlessStartArgs,
+  UpstreamProxy,
+} from '../types';
 
-(window as any).bridge = {
+const bridge: Bridge = {
   onRelayLog(cb: (tabId: string, msg: string) => void) {
     ipcRenderer.on(IPC.RELAY_LOG, (_e, data) => cb(data.tabId, data.msg));
   },
@@ -21,19 +28,19 @@ import type { HeadlessProcessEvent } from '../types';
   closeTab(tabId: string) {
     return ipcRenderer.invoke(IPC.CLOSE_TAB, tabId);
   },
-  startBot(settings: any) {
+  startBot(settings: BotSettings) {
     return ipcRenderer.invoke(IPC.START_BOT, settings);
   },
   stopBot() {
     return ipcRenderer.invoke(IPC.STOP_BOT);
   },
-  setUpstreamProxy(proxy: any) {
+  setUpstreamProxy(proxy: UpstreamProxy) {
     return ipcRenderer.invoke(IPC.SET_UPSTREAM_PROXY, proxy);
   },
   clearCookies(platform: string) {
     return ipcRenderer.invoke(IPC.CLEAR_COOKIES, platform);
   },
-  onCreateBotTab(cb: (data: any) => void) {
+  onCreateBotTab(cb: (data: BotTabData) => void) {
     ipcRenderer.on(IPC.CREATE_BOT_TAB, (_e, data) => cb(data));
   },
   getCallCreatorCode(scriptFile: string) {
@@ -45,13 +52,13 @@ import type { HeadlessProcessEvent } from '../types';
   exportCookiesZip() {
     return ipcRenderer.invoke(IPC.EXPORT_COOKIES_ZIP);
   },
-  startHeadless(tabId: string, platform: string, args: any) {
+  startHeadless(tabId: string, platform: string, args: HeadlessStartArgs) {
     return ipcRenderer.invoke(IPC.START_HEADLESS, tabId, platform, args);
   },
   sendBotCallLink(tabId: string, link: string) {
     return ipcRenderer.invoke(IPC.SEND_BOT_CALL_LINK, tabId, link);
   },
-  onCloseBotTab(cb: (data: any) => void) {
+  onCloseBotTab(cb: (data: { tabId: string }) => void) {
     ipcRenderer.on(IPC.CLOSE_BOT_TAB, (_e, data) => cb(data));
   },
   onLoginRequired(cb: (tabId: string, url: string) => void) {
@@ -61,3 +68,17 @@ import type { HeadlessProcessEvent } from '../types';
     ipcRenderer.on(IPC.LOGIN_DONE, (_e, data) => cb(data.tabId));
   },
 };
+
+const isolatedWindow = window as unknown as Window & { bridge: Bridge };
+isolatedWindow.bridge = bridge;
+
+function startTrustedRenderer(): void {
+  require('../renderer/index');
+  document.documentElement.dataset.creatorRendererReady = 'true';
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', startTrustedRenderer, { once: true });
+} else {
+  startTrustedRenderer();
+}
