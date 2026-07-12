@@ -1,6 +1,7 @@
 import { Platform, Bridge, LogPanel, TunnelMode, Webview } from '../types';
 import { SESSION_PARTITION, HOOK_POLL_INTERVAL_MS, CALL_CREATOR_INJECT_DELAY_MS, USER_AGENT } from '../constants';
 import { RendererTabManager } from './tab-manager';
+import { REMOTE_WEBVIEW_PREFERENCES } from '../main/trust-policy';
 
 declare const window: Window & { bridge: Bridge };
 
@@ -143,16 +144,21 @@ export function scrollLogs(): void {
   if (hookEl) hookEl.scrollTop = hookEl.scrollHeight;
 }
 
+function configureRemoteWebview(webview: Webview, url: string, tabId: string): void {
+  webview.setAttribute('src', url);
+  webview.setAttribute('partition', SESSION_PARTITION);
+  webview.setAttribute('useragent', USER_AGENT);
+  webview.setAttribute('webpreferences', REMOTE_WEBVIEW_PREFERENCES);
+  webview.classList.add('webview-full');
+  webview.dataset.tabId = tabId;
+}
+
 export function attachLoginWebview(tm: RendererTabManager, tabId: string, url: string): void {
   const tab = tm.tabs[tabId];
   if (!tab) return;
   if (tab.loginWebview) tab.loginWebview.remove();
   const webview = document.createElement('webview') as unknown as Webview;
-  webview.setAttribute('src', url);
-  webview.setAttribute('partition', SESSION_PARTITION);
-  webview.setAttribute('useragent', USER_AGENT);
-  webview.classList.add('webview-full');
-  webview.dataset.tabId = tabId;
+  configureRemoteWebview(webview, url, tabId);
   document.getElementById('content')!.appendChild(webview);
   tab.loginWebview = webview;
 }
@@ -175,39 +181,40 @@ export function loadURL(tm: RendererTabManager, url: string): void {
   } else if (url.includes('vk.com')) {
     activeTab.platform = Platform.VK;
   }
-  window.bridge.setTunnelMode(tm.activeTabId, activeTab.mode, activeTab.platform);
+  void window.bridge
+    .setTunnelMode(tm.activeTabId, activeTab.mode, activeTab.platform)
+    .catch(() => {});
   if (activeTab.wv) activeTab.wv.remove();
 
   const webview = document.createElement('webview') as unknown as Webview;
-  webview.setAttribute('src', url);
-  webview.setAttribute('partition', SESSION_PARTITION);
-  webview.setAttribute('nodeintegration', '');
-  webview.setAttribute('nodeintegrationinsubframes', '');
-  webview.setAttribute('useragent', USER_AGENT);
-  webview.classList.add('webview-full');
-  webview.dataset.tabId = tm.activeTabId;
+  configureRemoteWebview(webview, url, tm.activeTabId);
   document.getElementById('content')!.appendChild(webview);
 
   webview.addEventListener('dom-ready', () => {
     webview.setAudioMuted(true);
     const currentTabId = webview.dataset.tabId!;
 
-    window.bridge.getHookCode(currentTabId, webview.getURL()).then((code: string) => {
-      webview.executeJavaScript(code).catch(() => {});
-    });
+    window.bridge
+      .getHookCode(currentTabId, webview.getURL())
+      .then((code: string) => webview.executeJavaScript(code))
+      .catch(() => {});
 
-    window.bridge.getCallCreatorCode('call-checker.js').then((checkerCode: string) => {
-      const inject = `window.__CALL_CHECKER_TAB_ID = "${currentTabId}"; ${checkerCode}`;
-      webview.executeJavaScript(inject).catch(() => {});
-    });
+    window.bridge
+      .getCallCreatorCode('call-checker.js')
+      .then((checkerCode: string) => {
+        const inject = `window.__CALL_CHECKER_TAB_ID = "${currentTabId}"; ${checkerCode}`;
+        return webview.executeJavaScript(inject);
+      })
+      .catch(() => {});
 
     const tabState = tm.tabs[currentTabId];
     if (tabState?.isBot) {
       setTimeout(() => {
         const scriptFile = tabState.platform === Platform.Telemost ? 'tm-call-creator.js' : 'vk-call-creator.js';
-        window.bridge.getCallCreatorCode(scriptFile).then((code: string) => {
-          webview.executeJavaScript(code).catch(() => {});
-        });
+        window.bridge
+          .getCallCreatorCode(scriptFile)
+          .then((code: string) => webview.executeJavaScript(code))
+          .catch(() => {});
       }, CALL_CREATOR_INJECT_DELAY_MS);
     }
   });
@@ -217,13 +224,17 @@ export function loadURL(tm: RendererTabManager, url: string): void {
     renderTabs(tm);
     const currentTabId = webview.dataset.tabId!;
     webview.executeJavaScript('window.__hookInstalled = false').catch(() => {});
-    window.bridge.getHookCode(currentTabId, webview.getURL()).then((code: string) => {
-      webview.executeJavaScript(code).catch(() => {});
-    });
-    window.bridge.getCallCreatorCode('call-checker.js').then((checkerCode: string) => {
-      const inject = `window.__CALL_CHECKER_TAB_ID = "${currentTabId}"; ${checkerCode}`;
-      webview.executeJavaScript(inject).catch(() => {});
-    });
+    window.bridge
+      .getHookCode(currentTabId, webview.getURL())
+      .then((code: string) => webview.executeJavaScript(code))
+      .catch(() => {});
+    window.bridge
+      .getCallCreatorCode('call-checker.js')
+      .then((checkerCode: string) => {
+        const inject = `window.__CALL_CHECKER_TAB_ID = "${currentTabId}"; ${checkerCode}`;
+        return webview.executeJavaScript(inject);
+      })
+      .catch(() => {});
   });
 
   activeTab.wv = webview;
