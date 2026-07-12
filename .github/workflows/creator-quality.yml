@@ -1,0 +1,55 @@
+name: Creator quality
+
+on:
+  pull_request:
+    paths:
+      - "creator-app/**"
+      - ".github/workflows/creator-quality.yml"
+  push:
+    branches:
+      - "agent/**"
+    paths:
+      - "creator-app/**"
+      - ".github/workflows/creator-quality.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: creator-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  creator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: creator-app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: creator-app
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        working-directory: creator-app
+        run: npm run build
+
+      - name: Static type check
+        working-directory: creator-app
+        run: npm run lint
+
+      - name: Unit and regression tests
+        working-directory: creator-app
+        run: npm test
