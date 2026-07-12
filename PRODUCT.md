@@ -8,7 +8,7 @@
 - Windows v1 host: existing Electron Creator.
 - Android client: existing `android-app` using `VpnService` and the headless Go/Pion path.
 - The unmodified Windows Creator and Android debug APK have been built and smoke-tested locally on Windows.
-- Known upstream Android quality debt: Android lint is not yet green; the first confirmed error is the API-24-only `VpnTileService` declared while `minSdk` is 23.
+- Android baseline CI now passes `test`, `lintDebug`, and `assembleDebug`; 69 non-blocking lint warnings remain classified as technical debt.
 - No production credentials, tokens, cookies, proxy passwords or signing keys belong in Git or public CI.
 
 ## Mandatory architecture gate
@@ -34,7 +34,7 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [x] Define the draft WLB2 envelope, including an external non-personal `keyId` for deterministic key selection.
 - [x] Define the official VK API POC checklist and result template.
 - [ ] Confirm all baseline quality commands on a clean CI runner.
-- [ ] Obtain and classify the complete Android lint report.
+- [x] Obtain and classify the complete Android lint report.
 
 ### Pre-POC security gate — required before real VK credentials
 
@@ -117,4 +117,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: Phase 0 documentation established; pre-POC security implementation has not yet been accepted. Official VK API POC has not started. Real credentials must not be entered until the pre-POC security gate is reviewed and verified.**
+**Current status: Phase 0 documentation established; Android baseline lint errors are closed and its test/lint/assemble CI is green. Pre-POC security implementation has not yet been accepted. Official VK API POC has not started. Real credentials must not be entered until the pre-POC security gate is reviewed and verified.**
