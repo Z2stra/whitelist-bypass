@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsc",
     "lint": "tsc --noEmit -p tsconfig.test.json",
-    "test": "tsc -p tsconfig.test.json && node --test .test-dist/bot/security.test.js .test-dist/bot/bot-manager.test.js .test-dist/main/headless-process-events.test.js .test-dist/renderer/headless-event-state.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/bot/security.test.js .test-dist/bot/bot-manager.test.js .test-dist/main/headless-process-events.test.js .test-dist/main/trust-policy.test.js .test-dist/main/trust-boundary-static.test.js .test-dist/renderer/headless-event-state.test.js",
+    "smoke:electron": "node tools/smoke-electron.js",
     "start": "tsc && electron .",
     "start:dev": "electron ."
   },
@@ -50,26 +51,11 @@
       "target": "dmg",
       "icon": "resources/icon.icns",
       "extraResources": [
-        {
-          "from": "../relay/relay-darwin",
-          "to": "relay"
-        },
-        {
-          "from": "../headless/headless-vk-darwin",
-          "to": "headless-vk-creator"
-        },
-        {
-          "from": "../headless/headless-telemost-darwin",
-          "to": "headless-telemost-creator"
-        },
-        {
-          "from": "../headless/headless-wbstream-darwin",
-          "to": "headless-wbstream-creator"
-        },
-        {
-          "from": "../headless/headless-dion-darwin",
-          "to": "headless-dion-creator"
-        }
+        { "from": "../relay/relay-darwin", "to": "relay" },
+        { "from": "../headless/headless-vk-darwin", "to": "headless-vk-creator" },
+        { "from": "../headless/headless-telemost-darwin", "to": "headless-telemost-creator" },
+        { "from": "../headless/headless-wbstream-darwin", "to": "headless-wbstream-creator" },
+        { "from": "../headless/headless-dion-darwin", "to": "headless-dion-creator" }
       ]
     },
     "win": {
@@ -77,26 +63,11 @@
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "icon": "resources/icon.ico",
       "extraResources": [
-        {
-          "from": "../relay/relay-bundle.exe",
-          "to": "relay.exe"
-        },
-        {
-          "from": "../headless/headless-vk-bundle.exe",
-          "to": "headless-vk-creator.exe"
-        },
-        {
-          "from": "../headless/headless-telemost-bundle.exe",
-          "to": "headless-telemost-creator.exe"
-        },
-        {
-          "from": "../headless/headless-wbstream-bundle.exe",
-          "to": "headless-wbstream-creator.exe"
-        },
-        {
-          "from": "../headless/headless-dion-bundle.exe",
-          "to": "headless-dion-creator.exe"
-        }
+        { "from": "../relay/relay-bundle.exe", "to": "relay.exe" },
+        { "from": "../headless/headless-vk-bundle.exe", "to": "headless-vk-creator.exe" },
+        { "from": "../headless/headless-telemost-bundle.exe", "to": "headless-telemost-creator.exe" },
+        { "from": "../headless/headless-wbstream-bundle.exe", "to": "headless-wbstream-creator.exe" },
+        { "from": "../headless/headless-dion-bundle.exe", "to": "headless-dion-creator.exe" }
       ]
     },
     "linux": {
@@ -104,26 +75,11 @@
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "icon": "resources/icon.png",
       "extraResources": [
-        {
-          "from": "../relay/relay-bundle",
-          "to": "relay"
-        },
-        {
-          "from": "../headless/headless-vk-bundle",
-          "to": "headless-vk-creator"
-        },
-        {
-          "from": "../headless/headless-telemost-bundle",
-          "to": "headless-telemost-creator"
-        },
-        {
-          "from": "../headless/headless-wbstream-bundle",
-          "to": "headless-wbstream-creator"
-        },
-        {
-          "from": "../headless/headless-dion-bundle",
-          "to": "headless-dion-creator"
-        }
+        { "from": "../relay/relay-bundle", "to": "relay" },
+        { "from": "../headless/headless-vk-bundle", "to": "headless-vk-creator" },
+        { "from": "../headless/headless-telemost-bundle", "to": "headless-telemost-creator" },
+        { "from": "../headless/headless-wbstream-bundle", "to": "headless-wbstream-creator" },
+        { "from": "../headless/headless-dion-bundle", "to": "headless-dion-creator" }
       ]
     }
   }
