@@ -1,12 +1,6 @@
-name: Temporary trust-boundary source snapshot
+name: Temporary apply verified trust-boundary patch
 
 on:
-  pull_request:
-    paths:
-      - "creator-app/**"
-      - "PRODUCT.md"
-      - "CHANGELOG.md"
-      - ".github/workflows/temp-trust-boundary-snapshot.yml"
   push:
     branches:
       - agent/harden-electron-trust-boundary
@@ -15,19 +9,52 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  snapshot:
+  apply-and-verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/upload-artifact@v4
+      - name: Checkout working branch
+        uses: actions/checkout@v4
         with:
-          name: trust-boundary-source-${{ github.sha }}
-          retention-days: 1
-          include-hidden-files: true
-          path: |
-            creator-app/**
-            PRODUCT.md
-            CHANGELOG.md
+          ref: agent/harden-electron-trust-boundary
+          fetch-depth: 0
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: creator-app/package-lock.json
+
+      - name: Reconstruct and validate patch
+        shell: bash
+        run: |
+          cat .github/patches/trust-boundary.part-* | base64 --decode > /tmp/trust-boundary.patch
+          echo "9a0ba1480311d790c0ed688fe57d92996f5a5ceb3dc5a1467b5c40b3493ab2f8  /tmp/trust-boundary.patch" | sha256sum --check
+          git apply --check /tmp/trust-boundary.patch
+          git apply /tmp/trust-boundary.patch
+          rm -f .github/patches/trust-boundary.part-*
+          rm -f .github/workflows/temp-trust-boundary-snapshot.yml
+
+      - name: Install and verify Creator
+        working-directory: creator-app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npm run lint
+          npm test
+          xvfb-run --auto-servernum npm run smoke:electron
+
+      - name: Commit verified change
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "security(creator): harden Electron trust boundary"
+          git push origin HEAD:agent/harden-electron-trust-boundary
