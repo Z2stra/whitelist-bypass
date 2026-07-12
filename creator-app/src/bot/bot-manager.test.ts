@@ -74,6 +74,7 @@ test('sendMessage uses POST body and never puts the access token in the URL', as
   assert.equal(seenUrl, 'https://api.vk.com/method/messages.send');
   assert.equal(seenUrl.includes(SETTINGS.token), false);
   assert.equal(seenInit?.method, 'POST');
+  assert.equal(seenInit?.redirect, 'error');
   const body = seenInit?.body as URLSearchParams;
   assert.equal(body.get('access_token'), SETTINGS.token);
   assert.equal(body.get('peer_id'), '123456');
@@ -129,6 +130,24 @@ test('API timeout aborts the request and reports a safe timeout', async () => {
     return true;
   });
   assert.equal(aborted, true);
+});
+
+test('abort during response JSON parsing is classified as timeout, not invalid JSON', async () => {
+  const manager = createManager({
+    apiTimeoutMs: 10,
+    fetch: async (_url, init) => ({
+      ok: true,
+      status: 200,
+      json: () => new Promise<unknown>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+      }),
+    } as Response),
+  });
+
+  await assert.rejects(manager.sendMessage(123456, 'hello'), (error: Error) => {
+    assert.equal(error.message, 'VK API messages.send timed out');
+    return true;
+  });
 });
 
 test('only allowed users in a private dialog can execute bot commands', async () => {
