@@ -1,12 +1,6 @@
-name: Temporary creator source snapshot
+name: Temporary apply verified tab-manager patch
 
 on:
-  pull_request:
-    paths:
-      - "creator-app/**"
-      - "PRODUCT.md"
-      - "CHANGELOG.md"
-      - ".github/workflows/temp-source-snapshot.yml"
   push:
     branches:
       - agent/separate-headless-events
@@ -15,19 +9,44 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  snapshot:
+  apply-and-verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/upload-artifact@v4
         with:
-          name: creator-source-${{ github.sha }}
-          retention-days: 1
-          include-hidden-files: true
-          path: |
-            creator-app/**
-            PRODUCT.md
-            CHANGELOG.md
+          ref: agent/separate-headless-events
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: creator-app/package-lock.json
+
+      - name: Apply staged patch
+        run: |
+          git apply --check .github/patches/pr4-tab-manager.patch
+          git apply .github/patches/pr4-tab-manager.patch
+          rm .github/patches/pr4-tab-manager.patch
+
+      - name: Install and verify Creator
+        working-directory: creator-app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npm run lint
+          npm test
+
+      - name: Commit verified change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add creator-app/src/main/tab-manager.ts .github/patches/pr4-tab-manager.patch
+          git commit -m "security(creator): route headless output through typed events"
+          git push origin HEAD:agent/separate-headless-events
