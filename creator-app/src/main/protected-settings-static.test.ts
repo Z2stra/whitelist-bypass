@@ -70,3 +70,28 @@ test('cookie export is removed and child cookie files are ephemeral', () => {
   assert.match(cookiePolicy, /domain === root \|\| domain\.endsWith/);
   assert.equal(manager.includes('persisted ${id}'), false);
 });
+
+test('protected settings are single-instance and stop all existing secret consumers on replacement', () => {
+  const index = source('src/main/index.ts');
+  const ipc = source('src/main/ipc.ts');
+  const manager = source('src/main/tab-manager.ts');
+  const form = source('src/renderer/protected-settings-form.ts');
+
+  assert.match(index, /app\.requestSingleInstanceLock\(\)/);
+  assert.match(index, /app\.on\('second-instance'/);
+
+  const saveStart = ipc.indexOf('registerTrustedHandler(IPC.SAVE_PROTECTED_SETTINGS');
+  const saveEnd = ipc.indexOf('registerTrustedHandler(IPC.START_BOT', saveStart);
+  assert.notEqual(saveStart, -1);
+  assert.notEqual(saveEnd, -1);
+  const saveHandler = ipc.slice(saveStart, saveEnd);
+  assert.match(saveHandler, /protectedSettings\.applyUpdate/);
+  assert.match(saveHandler, /tabManager\.killAllRelays\(\)/);
+  assert.ok(
+    saveHandler.indexOf('tabManager.killAllRelays()') <
+      saveHandler.indexOf('tabManager.setUpstreamProxy'),
+    'old child processes must stop before the new proxy credentials become active',
+  );
+  assert.equal(manager.includes("user: (proxy?.user || '').trim()"), false);
+  assert.match(form, /username: \{ action: 'replace', value: username \}/);
+});

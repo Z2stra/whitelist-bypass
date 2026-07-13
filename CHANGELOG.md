@@ -58,6 +58,8 @@ All notable project changes made as part of the staged control-plane work are re
 - Added one-time, idempotent migration that deletes legacy plaintext only after confirmed protected persistence.
 - Made bot startup a zero-argument IPC call and applied upstream proxy settings only from main-process storage.
 - Serialized concurrent protected writes, quarantined corrupt stores and added a real Windows DPAPI write/reload/no-plaintext smoke test.
+- Added a single-instance lock to prevent competing Creator processes from overwriting the same protected store.
+- Saving protected settings now stops active bot/relay/headless consumers before activating replacement credentials, and proxy credentials are treated as opaque values.
 - Removed raw cookie ZIP export and the privileged cookie-export IPC path.
 - Replaced persistent headless `cookies-*.json` files with random process-scoped temporary files plus exit/crash cleanup.
 - Tightened cookie-domain matching to exact roots/proper subdomains and removed WB device IDs/cookie details from normal logs.

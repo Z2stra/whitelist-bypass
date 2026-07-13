@@ -60,6 +60,9 @@ The migration is idempotent and never overwrites an already configured protected
 ## File and failure handling
 
 - Writes are serialized to prevent concurrent IPC updates from losing data.
+- Creator enforces a single-instance lock so separate application processes cannot race the same protected-settings file.
+- A successful settings replacement stops active bot, relay and headless processes before the replacement proxy credentials become active; old values are not left in long-running process arguments.
+- Proxy username/password values are treated as opaque credentials and are not trimmed or normalized.
 - The encrypted envelope is written through a random temporary file and then replaced.
 - File permissions are requested as `0600` where the operating system supports POSIX modes.
 - An unreadable, unsupported or undecryptable store is quarantined with a `.corrupt-<timestamp>` suffix when possible.

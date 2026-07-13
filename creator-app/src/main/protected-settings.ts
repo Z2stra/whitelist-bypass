@@ -165,7 +165,7 @@ function normalizeSecretUpdate(
     action,
     value: normalizeString(record.value, label, maxLength, {
       allowEmpty: allowEmptyReplacement,
-      trim: label !== 'Proxy password',
+      trim: label === 'VK community token',
     }),
   };
 }
@@ -213,7 +213,7 @@ function normalizeLegacy(value: unknown): LegacyPlaintextSettings {
     const proxy = record.upstreamProxy as Record<string, unknown>;
     upstreamProxy = {
       socks: normalizeSocksEndpoint(proxy.socks ?? '', 'Legacy SOCKS endpoint'),
-      user: normalizeOptionalString(proxy.user, 'Legacy proxy username', MAX_PROXY_CREDENTIAL_LENGTH),
+      user: normalizeOptionalString(proxy.user, 'Legacy proxy username', MAX_PROXY_CREDENTIAL_LENGTH, { trim: false }),
       pass: normalizeOptionalString(proxy.pass, 'Legacy proxy password', MAX_PROXY_CREDENTIAL_LENGTH, { trim: false }),
     };
   }
@@ -243,7 +243,7 @@ function parsePlaintext(value: string): ProtectedSettingsData {
     },
     proxy: {
       socks: normalizeSocksEndpoint(proxy.socks, 'SOCKS endpoint'),
-      user: normalizeString(proxy.user, 'Proxy username', MAX_PROXY_CREDENTIAL_LENGTH, { allowEmpty: true }),
+      user: normalizeString(proxy.user, 'Proxy username', MAX_PROXY_CREDENTIAL_LENGTH, { allowEmpty: true, trim: false }),
       pass: normalizeString(proxy.pass, 'Proxy password', MAX_PROXY_CREDENTIAL_LENGTH, { allowEmpty: true, trim: false }),
     },
   };

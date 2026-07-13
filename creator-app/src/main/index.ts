@@ -27,45 +27,57 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'wbstream', privileges: { standard: true, secure: true, supportFetchAPI: true } },
 ]);
 
-app.whenReady().then(async () => {
-  if (protectedStorageSmokeRequested && !protectedStorageSmokeDirectory) {
-    throw new Error('Protected-storage smoke directory is invalid');
-  }
-
-  const protectedSettingsPath = path.join(
-    app.getPath('userData'),
-    'protected-settings.v1.json',
-  );
-  const protectedSettings = createElectronProtectedSettingsStore(protectedSettingsPath);
-  await protectedSettings.initialize();
-  if (protectedStorageSmokeRequested) {
-    await runProtectedSettingsSmoke(protectedSettings, protectedSettingsPath);
-    console.log('[PROTECTED_SETTINGS_SMOKE] PASS');
-    app.exit(0);
-    return;
-  }
-  try {
-    tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
-  } catch {
-    tabManager.setUpstreamProxy({ socks: '', user: '', pass: '' });
-  }
-
-  await cleanupStaleCookieDirectories();
-  await removeLegacyPersistentCookieFiles(app.getPath('userData'));
-
-  registerIpcHandlers(tabManager, protectedSettings, botCommandMode);
-  protocol.handle('wbstream', () => new Response(null, { status: 204 }));
-  const win = createWindow(tabManager);
-  tabManager.mainWindow = win;
-}).catch(() => {
-  if (protectedStorageSmokeRequested) {
-    console.error('[PROTECTED_SETTINGS_SMOKE] FAIL');
-    app.exit(1);
-    return;
-  }
-  console.error('[MAIN] Creator initialization failed');
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
   app.quit();
-});
+} else {
+  app.on('second-instance', () => {
+    const window = tabManager.mainWindow;
+    if (!window || window.isDestroyed()) return;
+    if (window.isMinimized()) window.restore();
+    window.focus();
+  });
+
+  app.whenReady().then(async () => {
+    if (protectedStorageSmokeRequested && !protectedStorageSmokeDirectory) {
+      throw new Error('Protected-storage smoke directory is invalid');
+    }
+
+    const protectedSettingsPath = path.join(
+      app.getPath('userData'),
+      'protected-settings.v1.json',
+    );
+    const protectedSettings = createElectronProtectedSettingsStore(protectedSettingsPath);
+    await protectedSettings.initialize();
+    if (protectedStorageSmokeRequested) {
+      await runProtectedSettingsSmoke(protectedSettings, protectedSettingsPath);
+      console.log('[PROTECTED_SETTINGS_SMOKE] PASS');
+      app.exit(0);
+      return;
+    }
+    try {
+      tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
+    } catch {
+      tabManager.setUpstreamProxy({ socks: '', user: '', pass: '' });
+    }
+
+    await cleanupStaleCookieDirectories();
+    await removeLegacyPersistentCookieFiles(app.getPath('userData'));
+
+    registerIpcHandlers(tabManager, protectedSettings, botCommandMode);
+    protocol.handle('wbstream', () => new Response(null, { status: 204 }));
+    const win = createWindow(tabManager);
+    tabManager.mainWindow = win;
+  }).catch(() => {
+    if (protectedStorageSmokeRequested) {
+      console.error('[PROTECTED_SETTINGS_SMOKE] FAIL');
+      app.exit(1);
+      return;
+    }
+    console.error('[MAIN] Creator initialization failed');
+    app.quit();
+  });
+}
 
 app.on('window-all-closed', () => {
   tabManager.killAllRelays();

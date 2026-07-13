@@ -140,11 +140,12 @@ export function registerIpcHandlers(
   registerTrustedHandler(IPC.SAVE_PROTECTED_SETTINGS, tabManager, async (_event, ...args) => {
     assertArgumentCount(args.length, [1]);
     const view = await protectedSettings.applyUpdate(args[0]);
-    tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
     if (tabManager.botManager) {
       tabManager.botManager.stop();
       tabManager.botManager = null;
     }
+    tabManager.killAllRelays();
+    tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
     return view;
   });
 

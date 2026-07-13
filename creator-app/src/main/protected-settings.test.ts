@@ -260,3 +260,27 @@ test('SOCKS endpoint is strictly host:port and cannot smuggle credentials into t
     }
   });
 });
+
+test('proxy credentials are opaque and survive protected-store round trips byte-for-byte', async () => {
+  await withTempStore(async (store, filePath) => {
+    const username = ' user with spaces ';
+    const password = ' pass with spaces ';
+    await store.applyUpdate({
+      bot: { groupId: '', userId: '', token: { action: 'keep' } },
+      proxy: {
+        socks: '127.0.0.1:1080',
+        username: { action: 'replace', value: username },
+        password: { action: 'replace', value: password },
+      },
+    });
+    assert.deepEqual(store.getUpstreamProxy(), {
+      socks: '127.0.0.1:1080',
+      user: username,
+      pass: password,
+    });
+
+    const reloaded = new ProtectedSettingsStore(filePath, new XorCipher());
+    await reloaded.initialize();
+    assert.deepEqual(reloaded.getUpstreamProxy(), store.getUpstreamProxy());
+  });
+});

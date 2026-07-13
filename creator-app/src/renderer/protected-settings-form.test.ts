@@ -39,7 +39,7 @@ test('explicit clear and replacement actions cannot be confused with blank keep 
     socks: 'proxy:1080', proxyUsername: ' user ', proxyPassword: ' pass with spaces ', clearProxyCredentials: false,
   });
   assert.deepEqual(replaced.bot.token, { action: 'replace', value: 'new-token' });
-  assert.deepEqual(replaced.proxy.username, { action: 'replace', value: 'user' });
+  assert.deepEqual(replaced.proxy.username, { action: 'replace', value: ' user ' });
   assert.deepEqual(replaced.proxy.password, { action: 'replace', value: ' pass with spaces ' });
 });
 

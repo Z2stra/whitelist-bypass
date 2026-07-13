@@ -33,7 +33,7 @@ function proxyUpdates(
     return { username: { action: 'keep' }, password: { action: 'keep' } };
   }
   return {
-    username: { action: 'replace', value: username.trim() },
+    username: { action: 'replace', value: username },
     password: { action: 'replace', value: password },
   };
 }

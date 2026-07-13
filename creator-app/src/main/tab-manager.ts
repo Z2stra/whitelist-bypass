@@ -255,7 +255,7 @@ export class TabManager {
   setUpstreamProxy(proxy: UpstreamProxy): void {
     this.upstreamProxy = {
       socks: (proxy?.socks || '').trim(),
-      user: (proxy?.user || '').trim(),
+      user: proxy?.user || '',
       pass: proxy?.pass || '',
     };
   }
