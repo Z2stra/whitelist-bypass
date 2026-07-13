@@ -33,13 +33,26 @@ All notable project changes made as part of the staged control-plane work are re
 - Kept real join links and TURN values in the authorized functional path while replacing them with redacted placeholders in console, renderer and saved diagnostic logs.
 - Added stream line buffering and regression tests for split output chunks, terminal flush, typed renderer state and bot replies.
 
+### Creator Electron trust boundary
+
+- Disabled Node integration in the application page main world, enabled context isolation and removed the main-world `require(...)` bootstrap.
+- Added a restrictive application-page CSP and exact local-file navigation binding.
+- Added strict IPC sender/main-frame checks, argument-count validation and runtime validators for all privileged invoke handlers.
+- Restricted call-script loading to a fixed filename allowlist with canonical directory containment.
+- Forced remote webviews and popup windows to use sandboxed, context-isolated, no-Node preferences without inherited preload scripts.
+- Added HTTPS platform-origin policies for webview attachment, navigation, redirects and popups; rejected credentials, lookalike hosts, unsafe schemes and non-default ports.
+- Changed remote permissions to default-deny and limited media/fullscreen to active call origins rather than login or general account pages.
+- Replaced global CSP stripping with a documented compatibility exception for legacy VK and Telemost document frames only.
+- Added trust-policy/static regression tests and an Electron/Xvfb smoke test that proves the UI boots without `require` or a privileged bridge in the page main world.
+- Configured the GitHub Actions Electron sandbox helper with root ownership and mode `4755`; sandboxing is not disabled in CI.
+
 ### Security status
 
-- The VK transport hardening and typed headless process-event subsets are implemented and tested.
-- Real VK credentials, platform cookies and proxy passwords remain prohibited until the remaining pre-POC security gate is complete: POC-only handling, IPC validation, remote-content hardening and protected secret storage.
+- VK transport hardening, typed headless process events and the Electron IPC/remote-content trust boundary are implemented and tested.
+- Real VK credentials, platform cookies and proxy passwords remain prohibited until the remaining pre-POC gate is complete: POC-only handling, protected main-process secret storage and cookie persistence/export review.
 
 ### Known baseline debt
 
 - Android has no blocking lint errors; 69 non-blocking warnings remain classified as technical debt.
-- The Electron renderer/webview trust boundary and long-lived renderer secret storage remain open security work.
+- Long-lived VK/proxy credentials still reside in renderer storage and platform cookie persistence/export remains open security work.
 - Creator dependency audit findings remain a separate dependency-upgrade task; no automatic `npm audit fix` was applied.
