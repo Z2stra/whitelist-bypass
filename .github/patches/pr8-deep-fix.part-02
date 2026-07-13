@@ -1,0 +1,157 @@
+ } from './protected-settings';
+ 
+ const APP_INDEX_PATH = path.join(__dirname, '..', '..', 'index.html');
+@@ -74,11 +75,33 @@ function assertNoArguments(args: unknown[]): void {
+   assertArgumentCount(args.length, [0]);
+ }
+ 
++async function stopBotManager(tabManager: TabManager): Promise<void> {
++  const botManager = tabManager.botManager;
++  if (!botManager) return;
++  tabManager.botManager = null;
++  await botManager.stopAndWait();
++}
++
++async function stopSecretConsumers(tabManager: TabManager): Promise<void> {
++  tabManager.invalidateSecretConsumers();
++  await stopBotManager(tabManager);
++  await tabManager.stopAllRelaysAndWait();
++}
++
+ export function registerIpcHandlers(
+   tabManager: TabManager,
+   protectedSettings: ProtectedSettingsStore,
+   botCommandMode: BotCommandMode = BotCommandMode.Operational,
+ ): void {
++  let secretLifecycleQueue: Promise<void> = Promise.resolve();
++  const runSecretLifecycle = <T>(operation: () => Promise<T> | T): Promise<T> => {
++    const run = secretLifecycleQueue.then(operation, operation);
++    secretLifecycleQueue = run.then(
++      () => undefined,
++      () => undefined,
++    );
++    return run;
++  };
+   registerTrustedHandler(IPC.GET_HOOK_CODE, tabManager, async (_event, ...args) => {
+     assertArgumentCount(args.length, [2]);
+     const tabId = assertTabId(args[0]);
+@@ -102,14 +125,16 @@ export function registerIpcHandlers(
+     const tabId = assertTabId(args[0]);
+     const mode = assertTunnelMode(args[1]);
+     const platform = assertOptionalPlatform(args[2]);
+-    await tabManager.setTunnelMode(tabId, mode, platform);
++    return runSecretLifecycle(() => tabManager.setTunnelMode(tabId, mode, platform));
+   });
+ 
+   registerTrustedHandler(IPC.START_RELAY, tabManager, async (_event, ...args) => {
+     assertArgumentCount(args.length, [1]);
+     const tabId = assertTabId(args[0]);
+-    const tab = await tabManager.getOrCreateTab(tabId);
+-    tabManager.startRelay(tabId, tab);
++    return runSecretLifecycle(async () => {
++      const tab = await tabManager.getOrCreateTab(tabId);
++      await tabManager.startRelay(tabId, tab);
++    });
+   });
+ 
+   registerTrustedHandler(IPC.START_HEADLESS, tabManager, async (_event, ...args) => {
+@@ -117,7 +142,7 @@ export function registerIpcHandlers(
+     const tabId = assertTabId(args[0]);
+     const platform = assertPlatform(args[1]);
+     const startArgs = assertHeadlessStartArgs(args[2]);
+-    await tabManager.startHeadless(tabId, platform, startArgs);
++    return runSecretLifecycle(() => tabManager.startHeadless(tabId, platform, startArgs));
+   });
+ 
+   registerTrustedHandler(IPC.CLOSE_TAB, tabManager, (_event, ...args) => {
+@@ -132,26 +157,31 @@ export function registerIpcHandlers(
+ 
+   registerTrustedHandler(IPC.MIGRATE_LEGACY_SETTINGS, tabManager, async (_event, ...args) => {
+     assertArgumentCount(args.length, [1]);
+-    const view = await protectedSettings.migrateLegacy(args[0]);
+-    tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
+-    return view;
++    protectedSettings.ensureWritable();
++    return runSecretLifecycle(async () => {
++      await stopSecretConsumers(tabManager);
++      const view = await protectedSettings.migrateLegacy(args[0]);
++      tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
++      return view;
++    });
+   });
+ 
+   registerTrustedHandler(IPC.SAVE_PROTECTED_SETTINGS, tabManager, async (_event, ...args) => {
+     assertArgumentCount(args.length, [1]);
+-    const view = await protectedSettings.applyUpdate(args[0]);
+-    if (tabManager.botManager) {
+-      tabManager.botManager.stop();
+-      tabManager.botManager = null;
+-    }
+-    tabManager.killAllRelays();
+-    tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
+-    return view;
++    validateProtectedSettingsUpdate(args[0]);
++    protectedSettings.ensureWritable();
++    return runSecretLifecycle(async () => {
++      await stopSecretConsumers(tabManager);
++      const view = await protectedSettings.applyUpdate(args[0]);
++      tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
++      return view;
++    });
+   });
+ 
+   registerTrustedHandler(IPC.START_BOT, tabManager, async (_event, ...args) => {
+     assertNoArguments(args);
+-    let settings: BotSettings;
++    return runSecretLifecycle(async () => {
++      let settings: BotSettings;
+     try {
+       settings = protectedSettings.getBotSettings();
+     } catch (error) {
+@@ -161,12 +191,9 @@ export function registerIpcHandlers(
+       return { success: false, error: message };
+     }
+ 
+-    if (tabManager.botManager) {
+-      tabManager.botManager.stop();
+-      tabManager.botManager = null;
+-    }
++      await stopBotManager(tabManager);
+ 
+-    try {
++      try {
+       const bm = new BotManager(
+         settings,
+         async (tabConfig) => {
+@@ -214,22 +241,23 @@ export function registerIpcHandlers(
+       if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
+         tabManager.mainWindow.webContents.send(IPC.BOT_ERROR, message);
+       }
+-      return { success: false, error: message };
+-    }
++        return { success: false, error: message };
++      }
++    });
+   });
+ 
+-  registerTrustedHandler(IPC.STOP_BOT, tabManager, (_event, ...args) => {
++  registerTrustedHandler(IPC.STOP_BOT, tabManager, async (_event, ...args) => {
+     assertNoArguments(args);
+-    if (tabManager.botManager) {
+-      tabManager.botManager.stop();
+-      tabManager.botManager = null;
+-    }
+-    return { success: true };
++    return runSecretLifecycle(async () => {
++      await stopBotManager(tabManager);
++      return { success: true };
++    });
+   });
+ 
+   registerTrustedHandler(IPC.CLEAR_COOKIES, tabManager, (_event, ...args) => {
+     assertArgumentCount(args.length, [1]);
+-    return tabManager.clearPlatformCookies(assertPlatform(args[0]));
++    const platform = assertPlatform(args[0]);
++    return runSecretLifecycle(() => tabManager.clearPlatformCookies(platform));
+   });
+ 
