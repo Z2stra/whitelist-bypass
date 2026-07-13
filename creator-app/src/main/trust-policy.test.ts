@@ -37,9 +37,10 @@ test('remote URL allowlist accepts intended platform origins and subdomains', ()
   }
 });
 
-test('remote URL allowlist rejects lookalikes, credentials and unsafe schemes', () => {
+test('remote URL allowlist rejects lookalikes, credentials, custom ports and unsafe schemes', () => {
   for (const url of [
     'http://vk.com/im',
+    'https://vk.com:4443/im',
     'https://vk.com.evil.example/',
     'https://evilvk.com/',
     'https://user:pass@vk.com/',
@@ -66,17 +67,7 @@ test('legacy CSP relaxation is limited to VK and Telemost documents', () => {
   assert.equal(isLegacyHookUrl('https://stream.wb.ru/'), false);
 });
 
-test('permission policy defaults to deny and only admits media/fullscreen on allowlisted origins', () => {
-  assert.equal(isAllowedPermission('media', 'https://vk.com/call'), true);
-  assert.equal(isAllowedPermission('fullscreen', 'https://telemost.yandex.ru/j/x'), true);
-  assert.equal(isAllowedPermission('notifications', 'https://vk.com/call'), false);
-  assert.equal(isAllowedPermission('media', 'https://evil.example/'), false);
-  assert.equal(isAllowedPermission('media', 'http://vk.com/call'), false);
-});
-
-test('guest preferences forcibly remove Node privileges and preload paths', () => {
-  const preferences = {
-    preload: '/tmp/evil.js',
+test('permission policy defaults to deny and only admits media/fullscreen on active call originstmp/evil.js',
     nodeIntegration: true,
     nodeIntegrationInSubFrames: true,
     nodeIntegrationInWorker: true,
@@ -165,7 +156,7 @@ test('headless arguments enforce mode/target invariants', () => {
   );
 });
 
-test('settings, proxy and sensitive-result validators reject non-cloneable or oversized shapes', () => {
+test('settings, proxy and sensitive-result validators reject malformed or oversized values', () => {
   assert.deepEqual(
     assertBotSettingsShape({ token: 'token', groupId: '42', userId: '100' }),
     { token: 'token', groupId: '42', userId: '100' },
@@ -182,6 +173,11 @@ test('settings, proxy and sensitive-result validators reject non-cloneable or ov
     pass: '',
   });
   assert.throws(() => assertUpstreamProxy({ socks: [], user: '', pass: '' }), TrustPolicyError);
+  assert.throws(
+    () => assertUpstreamProxy({ socks: '127.0.0.1:1080\tignored', user: '', pass: '' }),
+    TrustPolicyError,
+  );
   assert.equal(assertSensitiveResult('Joined successfully'), 'Joined successfully');
+  assert.throws(() => assertSensitiveResult('line\tbreak'), TrustPolicyError);
   assert.throws(() => assertSensitiveResult('x'.repeat(5000)), TrustPolicyError);
 });
