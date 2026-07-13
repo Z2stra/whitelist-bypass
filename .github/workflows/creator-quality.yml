@@ -52,6 +52,14 @@ jobs:
         working-directory: creator-app
         run: npm test
 
+      - name: Configure Electron sandbox helper
+        working-directory: creator-app
+        shell: bash
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+          test "$(stat -c '%U:%G %a' node_modules/electron/dist/chrome-sandbox)" = "root:root 4755"
+
       - name: Electron renderer isolation smoke test
         working-directory: creator-app
         shell: bash
@@ -60,7 +68,7 @@ jobs:
           xvfb-run -a npm run smoke:electron 2>&1 | tee electron-smoke.log
 
       - name: Upload Electron smoke diagnostics
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: creator-smoke-${{ github.sha }}
