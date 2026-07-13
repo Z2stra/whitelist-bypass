@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tsc",
     "lint": "tsc --noEmit -p tsconfig.test.json",
-    "test": "tsc -p tsconfig.test.json && node --test .test-dist/bot/security.test.js .test-dist/bot/bot-manager.test.js .test-dist/main/headless-process-events.test.js .test-dist/main/trust-policy.test.js .test-dist/main/trust-boundary-static.test.js .test-dist/renderer/headless-event-state.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/bot/security.test.js .test-dist/bot/bot-manager.test.js .test-dist/bot/command-mode.test.js .test-dist/control/poc/poc-protocol.test.js .test-dist/control/poc/poc-handler.test.js .test-dist/control/poc/poc-bot-manager-integration.test.js .test-dist/main/headless-process-events.test.js .test-dist/main/trust-policy.test.js .test-dist/main/trust-boundary-static.test.js .test-dist/renderer/headless-event-state.test.js",
     "smoke:electron": "node tools/smoke-electron.js",
     "start": "tsc && electron .",
     "start:dev": "electron ."

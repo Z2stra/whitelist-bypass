@@ -20,6 +20,8 @@ import {
   validateBotSettings,
   ValidatedBotSettings,
 } from './security';
+import { BotCommandMode } from './command-mode';
+import { handlePocMessage } from '../control/poc/poc-handler';
 
 type CreateTabFn = (config: TabConfig) => Promise<void> | void;
 type GetTabsFn = () => TabListEntry[];
@@ -69,6 +71,7 @@ export interface BotManagerOptions {
   pollTimeoutMs?: number;
   retryBaseMs?: number;
   retryMaxMs?: number;
+  commandMode?: BotCommandMode;
 }
 
 const DEFAULT_API_TIMEOUT_MS = 15_000;
@@ -104,6 +107,7 @@ export class BotManager {
   private readonly pollTimeoutMs: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
+  private readonly commandMode: BotCommandMode;
   private readonly activeRequests = new Set<AbortController>();
 
   private ts: string | null = null;
@@ -134,6 +138,7 @@ export class BotManager {
     this.pollTimeoutMs = options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
     this.retryBaseMs = options.retryBaseMs ?? BOT_POLL_RETRY_DELAY_MS;
     this.retryMaxMs = options.retryMaxMs ?? DEFAULT_RETRY_MAX_MS;
+    this.commandMode = options.commandMode ?? BotCommandMode.Operational;
   }
 
   private isRunActive(generation: number): boolean {
@@ -253,7 +258,7 @@ export class BotManager {
 
     const generation = ++this.runGeneration;
     this.running = true;
-    console.log('[BOT] Starting');
+    console.log(`[BOT] Starting (${this.commandMode})`);
 
     try {
       await this.getLongPollServer();
@@ -364,7 +369,20 @@ export class BotManager {
       return;
     }
 
-    let text = (message.text || '').trim();
+    const rawText = typeof message.text === 'string' ? message.text : '';
+    if (this.commandMode === BotCommandMode.PocOnly) {
+      console.log('[BOT] Authorized private POC message received');
+      await handlePocMessage({
+        text: rawText,
+        peerId,
+        sendMessage: (targetPeerId, responseText) =>
+          this.sendMessage(targetPeerId, responseText),
+        log: (diagnostic) => console.log('[POC]', diagnostic),
+      });
+      return;
+    }
+
+    let text = rawText.trim();
     let payload: ButtonPayload | null = null;
     if (message.payload) {
       try {

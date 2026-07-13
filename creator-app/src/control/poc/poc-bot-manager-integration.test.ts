@@ -67,9 +67,19 @@ test('POC-only mode sends a correlated PONG and never invokes operational callba
 
   const logs = await captureConsole(async () => {
     await privateManager.handleUpdate(messageUpdate(PING));
-    await privateManager.handleUpdate(messageUpdate('/vk headless'));
-    await privateManager.handleUpdate(messageUpdate('/close deadbeef'));
-    await privateManager.handleUpdate(messageUpdate('https://vk.com/call/join/private-room'));
+    for (const legacyText of [
+      '/start',
+      '/list',
+      '/vk headless',
+      '/tm headless',
+      '/wb',
+      '/dion',
+      '/close deadbeef',
+      'https://vk.com/call/join/private-room',
+      `WLB2.${NONCE}`,
+    ]) {
+      await privateManager.handleUpdate(messageUpdate(legacyText));
+    }
     await privateManager.handleUpdate(messageUpdate('', 123456, 123456, JSON.stringify({ cmd: 'vk', mode: 'headless' })));
   });
 
@@ -83,6 +93,26 @@ test('POC-only mode sends a correlated PONG and never invokes operational callba
   assert.equal(logs.includes(REQUEST_ID), false);
   assert.equal(logs.includes(NONCE), false);
   assert.equal(logs.includes('private-room'), false);
+});
+
+
+test('operational mode does not accidentally interpret WLB-POC/1 messages', async () => {
+  const sent: string[] = [];
+  const created: TabConfig[] = [];
+  const manager = new BotManager(
+    SETTINGS,
+    (config) => { created.push(config); },
+    () => [],
+    () => {},
+    { commandMode: BotCommandMode.Operational },
+  );
+  const privateManager = manager as unknown as PrivateManager;
+  privateManager.sendMessage = async (_peerId, text) => { sent.push(text); };
+
+  await privateManager.handleUpdate(messageUpdate(PING));
+
+  assert.deepEqual(sent, []);
+  assert.deepEqual(created, []);
 });
 
 test('POC-only mode still requires the allowlisted private dialog', async () => {
