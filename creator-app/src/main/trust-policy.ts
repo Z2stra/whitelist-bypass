@@ -38,6 +38,8 @@ const REMOTE_HOST_ROOTS = [
 
 const LEGACY_HOOK_HOST_ROOTS = ['vk.com', 'vk.ru'] as const;
 const LEGACY_HOOK_EXACT_HOSTS = new Set(['telemost.yandex.ru']);
+const ACTIVE_MEDIA_HOST_ROOTS = ['vk.com', 'vk.ru', 'dion.vc', 'stream.wb.ru'] as const;
+const ACTIVE_MEDIA_EXACT_HOSTS = new Set(['telemost.yandex.ru']);
 const ALLOWED_PERMISSIONS = new Set(['media', 'fullscreen']);
 const ALLOWED_SCRIPT_FILES = new Set([
   'call-checker.js',
@@ -91,6 +93,7 @@ function parseHttpsUrl(raw: unknown): URL | null {
     const parsed = new URL(raw);
     if (parsed.protocol !== 'https:') return null;
     if (parsed.username || parsed.password) return null;
+    if (parsed.port) return null;
     return parsed;
   } catch {
     return null;
@@ -140,7 +143,14 @@ export function isTrustedAppUrl(raw: unknown, expectedRaw: unknown): boolean {
 }
 
 export function isAllowedPermission(permission: string, requestingUrl: unknown): boolean {
-  return ALLOWED_PERMISSIONS.has(permission) && isAllowedRemoteUrl(requestingUrl);
+  if (!ALLOWED_PERMISSIONS.has(permission)) return false;
+  const parsed = parseHttpsUrl(requestingUrl);
+  if (!parsed) return false;
+  const hostname = parsed.hostname.toLowerCase();
+  return (
+    ACTIVE_MEDIA_EXACT_HOSTS.has(hostname) ||
+    ACTIVE_MEDIA_HOST_ROOTS.some((root) => hostMatchesRoot(hostname, root))
+  );
 }
 
 export function hardenGuestWebPreferences(preferences: GuestWebPreferencesLike): void {
@@ -178,7 +188,7 @@ function assertString(
   if (value.length > maxLength) {
     throw new TrustPolicyError(`${label} is too long`);
   }
-  if (/[\x00\r\n]/.test(value)) {
+  if (/[\x00-\x1F\x7F]/.test(value)) {
     throw new TrustPolicyError(`${label} contains control characters`);
   }
   const trimmed = value.trim();
