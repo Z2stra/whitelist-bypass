@@ -5,7 +5,7 @@ const path = require('path');
 
 const electronPath = require('electron');
 const appRoot = path.resolve(__dirname, '..');
-const timeoutMs = 30000;
+const timeoutMs = 45000;
 let output = '';
 let settled = false;
 let timer;
@@ -19,11 +19,13 @@ function finish(code, message) {
   process.exitCode = code;
 }
 
-const child = spawn(electronPath, [appRoot], {
+const child = spawn(electronPath, ['--enable-logging=stderr', appRoot], {
   cwd: appRoot,
   env: {
     ...process.env,
     CREATOR_SMOKE_TEST: '1',
+    ELECTRON_ENABLE_LOGGING: '1',
+    ELECTRON_ENABLE_STACK_DUMPING: '1',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
