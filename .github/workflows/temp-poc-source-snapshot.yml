@@ -1,6 +1,9 @@
 name: Temporary POC source snapshot
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/temp-poc-source-snapshot.yml"
   push:
     branches:
       - agent/add-vk-poc-only-handler
