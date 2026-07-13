@@ -1,0 +1,146 @@
++    tab.relay = null;
++    console.log(`[${tabId}] killing process pid=${proc.pid}`);
++    try {
+       proc.kill();
+-      this.cleanupCookieLease(proc);
+-      tab.relay = null;
++    } catch {}
++    if (proc.pid == null || proc.exitCode !== null || proc.signalCode !== null) {
++      void this.cleanupCookieLease(proc);
+     }
+   }
+ 
++  async stopAllRelaysAndWait(): Promise<void> {
++    const processes = new Set<ChildProcess>([
++      ...this.activeProcesses,
++      ...this.cookieLeases.keys(),
++    ]);
++    this.tabs.forEach((tab) => {
++      if (tab.relay) processes.add(tab.relay);
++      tab.relay = null;
++    });
++
++    await Promise.all(Array.from(processes).map(async (proc) => {
++      await terminateChildProcess(proc);
++      this.activeProcesses.delete(proc);
++      if (!(await this.cleanupCookieLease(proc))) {
++        throw new Error('Temporary cookie material could not be removed');
++      }
++    }));
++  }
++
+   killAllRelays(): void {
+     this.tabs.forEach((tab, tabId) => this.killRelay(tabId, tab));
+-    for (const proc of Array.from(this.cookieLeases.keys())) this.cleanupCookieLease(proc);
++    for (const proc of Array.from(this.activeProcesses)) {
++      try {
++        proc.kill();
++      } catch {}
++    }
++    for (const [proc, lease] of Array.from(this.cookieLeases.entries())) {
++      if (lease.cleanupSync()) this.cookieLeases.delete(proc);
++    }
+   }
+ 
+   async loadHook(tabId: string, url: string, tab: TabState): Promise<string> {
+@@ -568,8 +648,10 @@ export class TabManager {
+       mode === TunnelMode.HeadlessWBStream ||
+       mode === TunnelMode.HeadlessDion
+     ) return;
+-    this.killRelay(tabId, tab);
+-    setTimeout(() => this.startRelay(tabId, tab), RELAY_RESTART_DELAY_MS);
++    await this.stopRelayAndWait(tabId, tab);
++    await new Promise((resolve) => setTimeout(resolve, RELAY_RESTART_DELAY_MS));
++    if (this.tabs.get(tabId) !== tab) return;
++    await this.startRelay(tabId, tab);
+   }
+ 
+   private async getCookiesForDomains(domains: string[]): Promise<{ name: string; value: string }[]> {
+diff --git a/creator-app/src/renderer/index.ts b/creator-app/src/renderer/index.ts
+index 77b62fe..cd01d96 100644
+--- a/creator-app/src/renderer/index.ts
++++ b/creator-app/src/renderer/index.ts
+@@ -241,11 +241,11 @@ async function openSettings(): Promise<void> {
+     : 'vk1.a.xxx...';
+   proxyUser.value = '';
+   proxyUser.placeholder = view.proxy.usernameConfigured
+-    ? 'Stored securely — re-enter both fields to replace'
++    ? 'Stored securely — leave blank to keep'
+     : 'optional';
+   proxyPass.value = '';
+   proxyPass.placeholder = view.proxy.passwordConfigured
+-    ? 'Stored securely — re-enter both fields to replace'
++    ? 'Stored securely — leave blank to keep'
+     : 'optional';
+   clearToken.checked = false;
+   clearProxy.checked = false;
+diff --git a/creator-app/src/renderer/protected-settings-form.test.ts b/creator-app/src/renderer/protected-settings-form.test.ts
+index 0c7efc4..10bc5ef 100644
+--- a/creator-app/src/renderer/protected-settings-form.test.ts
++++ b/creator-app/src/renderer/protected-settings-form.test.ts
+@@ -52,3 +52,20 @@ test('protection summary never contains secret values', () => {
+   assert.match(summary, /Windows DPAPI/);
+   assert.equal(summary.includes('token'), false);
+ });
++
++
++test('proxy username and password can be replaced independently without clearing the other secret', () => {
++  const usernameOnly = buildProtectedSettingsUpdate({
++    groupId: '', userId: '', token: '', clearToken: false,
++    socks: 'proxy:1080', proxyUsername: 'new-user', proxyPassword: '', clearProxyCredentials: false,
++  });
++  assert.deepEqual(usernameOnly.proxy.username, { action: 'replace', value: 'new-user' });
++  assert.deepEqual(usernameOnly.proxy.password, { action: 'keep' });
++
++  const passwordOnly = buildProtectedSettingsUpdate({
++    groupId: '', userId: '', token: '', clearToken: false,
++    socks: 'proxy:1080', proxyUsername: '', proxyPassword: 'new-pass', clearProxyCredentials: false,
++  });
++  assert.deepEqual(passwordOnly.proxy.username, { action: 'keep' });
++  assert.deepEqual(passwordOnly.proxy.password, { action: 'replace', value: 'new-pass' });
++});
+diff --git a/creator-app/src/renderer/protected-settings-form.ts b/creator-app/src/renderer/protected-settings-form.ts
+index 54eae57..8d2c50e 100644
+--- a/creator-app/src/renderer/protected-settings-form.ts
++++ b/creator-app/src/renderer/protected-settings-form.ts
+@@ -29,12 +29,13 @@ function proxyUpdates(
+   if (clear) {
+     return { username: { action: 'clear' }, password: { action: 'clear' } };
+   }
+-  if (username.length === 0 && password.length === 0) {
+-    return { username: { action: 'keep' }, password: { action: 'keep' } };
+-  }
+   return {
+-    username: { action: 'replace', value: username },
+-    password: { action: 'replace', value: password },
++    username: username.length > 0
++      ? { action: 'replace', value: username }
++      : { action: 'keep' },
++    password: password.length > 0
++      ? { action: 'replace', value: password }
++      : { action: 'keep' },
+   };
+ }
+ 
+diff --git a/creator-app/src/renderer/protected-settings-manager.test.ts b/creator-app/src/renderer/protected-settings-manager.test.ts
+index 3a53823..11dd634 100644
+--- a/creator-app/src/renderer/protected-settings-manager.test.ts
++++ b/creator-app/src/renderer/protected-settings-manager.test.ts
+@@ -103,3 +103,56 @@ test('successful protected migration does not hide a legacy plaintext cleanup fa
+     restore();
+   }
+ });
++
++
++test('migration confirmation refuses to delete a legacy secret missing from protected projection', async () => {
++  const storage = new MemoryStorage();
++  storage.setItem(
++    LEGACY_BOT_SETTINGS_KEY,
++    JSON.stringify({ token: 'legacy-token', groupId: '42', userId: '1' }),
++  );
++  const unconfirmed = {
++    ...VIEW,
++    bot: { ...VIEW.bot, tokenConfigured: false },
++  };
++  const restore = installGlobals(storage, {
++    migrateLegacySettings: async () => unconfirmed,
