@@ -2,10 +2,11 @@ import { app, protocol } from 'electron';
 import { TabManager } from './tab-manager';
 import { createWindow } from './window';
 import { registerIpcHandlers } from './ipc';
+import { resolveBotCommandMode } from '../bot/command-mode';
 
 const tabManager = new TabManager();
 
-registerIpcHandlers(tabManager);
+registerIpcHandlers(tabManager, resolveBotCommandMode(process.argv));
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'wbstream', privileges: { standard: true, secure: true, supportFetchAPI: true } },

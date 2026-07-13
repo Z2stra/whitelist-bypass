@@ -32,6 +32,10 @@ All notable project changes made as part of the staged control-plane work are re
 - Moved headless creator marker parsing into the main process and exposed typed functional events through a dedicated IPC channel.
 - Kept real join links and TURN values in the authorized functional path while replacing them with redacted placeholders in console, renderer and saved diagnostic logs.
 - Added stream line buffering and regression tests for split output chunks, terminal flush, typed renderer state and bot replies.
+- Added an explicit `--vk-poc-only` runtime mode for the mandatory official VK transport proof.
+- Added a strict `WLB-POC/1 PING` parser and correlated `PONG` formatter with bounded base64url fields.
+- Routed POC-only messages before keyboard payload, join-link and legacy command parsing, eliminating operational fallback in POC mode.
+- Added negative, transport-failure, safe-logging and static isolation regression tests for the POC handler.
 
 ### Creator Electron trust boundary
 
@@ -48,8 +52,8 @@ All notable project changes made as part of the staged control-plane work are re
 
 ### Security status
 
-- VK transport hardening, typed headless process events and the Electron IPC/remote-content trust boundary are implemented and tested.
-- Real VK credentials, platform cookies and proxy passwords remain prohibited until the remaining pre-POC gate is complete: POC-only handling, protected main-process secret storage and cookie persistence/export review.
+- VK transport hardening, typed headless process events, the isolated `WLB-POC/1` handler and the Electron IPC/remote-content trust boundary are implemented and tested.
+- Real VK credentials, platform cookies and proxy passwords remain prohibited until protected main-process secret storage and cookie persistence/export review are complete.
 
 ### Known baseline debt
 

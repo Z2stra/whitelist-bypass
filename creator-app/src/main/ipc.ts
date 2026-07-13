@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import { pathToFileURL } from 'url';
 import { TabManager } from './tab-manager';
 import { BotManager } from '../bot/bot-manager';
+import { BotCommandMode } from '../bot/command-mode';
 import { safeErrorMessage } from '../bot/security';
 import { IPC } from '../constants';
 import {
@@ -72,7 +73,10 @@ function assertNoArguments(args: unknown[]): void {
   assertArgumentCount(args.length, [0]);
 }
 
-export function registerIpcHandlers(tabManager: TabManager): void {
+export function registerIpcHandlers(
+  tabManager: TabManager,
+  botCommandMode: BotCommandMode = BotCommandMode.Operational,
+): void {
   registerTrustedHandler(IPC.GET_HOOK_CODE, tabManager, async (_event, ...args) => {
     assertArgumentCount(args.length, [2]);
     const tabId = assertTabId(args[0]);
@@ -162,6 +166,7 @@ export function registerIpcHandlers(tabManager: TabManager): void {
             tabManager.mainWindow.webContents.send(IPC.CLOSE_BOT_TAB, { tabId });
           }
         },
+        { commandMode: botCommandMode },
       );
       bm.onError = (msg: string) => {
         if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
