@@ -54,4 +54,16 @@ jobs:
 
       - name: Electron renderer isolation smoke test
         working-directory: creator-app
-        run: xvfb-run -a npm run smoke:electron
+        shell: bash
+        run: |
+          set -o pipefail
+          xvfb-run -a npm run smoke:electron 2>&1 | tee electron-smoke.log
+
+      - name: Upload Electron smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: creator-smoke-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: creator-app/electron-smoke.log
