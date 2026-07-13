@@ -1,0 +1,110 @@
+name: Temporary verify and publish PR8 deep fixes
+
+on:
+  push:
+    branches:
+      - agent/pr8-deep-fix-publish
+    paths:
+      - ".github/workflows/temp-pr8-deep-fix-publish.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  verify-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/pr8-deep-fix-publish
+          fetch-depth: 0
+
+      - name: Reconstruct and apply exact reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/patches/pr8-deep-fix.part-* > /tmp/pr8-deep-fixes.patch
+          echo "34b927ce81b0c42f29fba9064bf9d399de9b56dc694a98af03e293b621acb392  /tmp/pr8-deep-fixes.patch" | sha256sum -c -
+          git apply --check /tmp/pr8-deep-fixes.patch
+          git apply /tmp/pr8-deep-fixes.patch
+          rm -f .github/patches/pr8-deep-fix.part-*
+          rm -f .github/workflows/temp-pr8-deep-fix-publish.yml
+          git add -A
+          git diff --cached --check
+
+          cat > /tmp/expected-files <<'FILES'
+          CHANGELOG.md
+          PRODUCT.md
+          creator-app/package.json
+          creator-app/src/bot/bot-manager.test.ts
+          creator-app/src/bot/bot-manager.ts
+          creator-app/src/main/ephemeral-cookie-file.test.ts
+          creator-app/src/main/ephemeral-cookie-file.ts
+          creator-app/src/main/index.ts
+          creator-app/src/main/ipc.ts
+          creator-app/src/main/process-termination.test.ts
+          creator-app/src/main/process-termination.ts
+          creator-app/src/main/protected-settings-static.test.ts
+          creator-app/src/main/protected-settings.test.ts
+          creator-app/src/main/protected-settings.ts
+          creator-app/src/main/tab-manager.ts
+          creator-app/src/renderer/index.ts
+          creator-app/src/renderer/protected-settings-form.test.ts
+          creator-app/src/renderer/protected-settings-form.ts
+          creator-app/src/renderer/protected-settings-manager.test.ts
+          creator-app/src/renderer/protected-settings-migration.ts
+          creator-app/src/renderer/tab-manager.ts
+          docs/security/protected-settings-and-cookies.md
+          FILES
+          sort -o /tmp/expected-files /tmp/expected-files
+          git diff --cached --name-only 675c323f595c007abc52735eb32324e3b1ff0a31 | sort > /tmp/actual-files
+          diff -u /tmp/expected-files /tmp/actual-files
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: creator-app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: creator-app
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        working-directory: creator-app
+        run: npm run build
+
+      - name: Static type check
+        working-directory: creator-app
+        run: npm run lint
+
+      - name: Unit and regression tests
+        working-directory: creator-app
+        run: npm test
+
+      - name: Configure Electron sandbox helper
+        working-directory: creator-app
+        shell: bash
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+          test "$(stat -c '%U:%G %a' node_modules/electron/dist/chrome-sandbox)" = "root:root 4755"
+
+      - name: Electron renderer isolation smoke
+        working-directory: creator-app
+        run: xvfb-run -a npm run smoke:electron
+
+      - name: Publish clean commit to PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          tree=$(git write-tree)
+          commit=$(printf '%s\n' 'fix(creator): close protected-settings lifecycle gaps' | git commit-tree "$tree" -p 675c323f595c007abc52735eb32324e3b1ff0a31)
+          echo "PUBLISHED_COMMIT=$commit"
+          git push --force origin "$commit:refs/heads/agent/protect-creator-secrets"
