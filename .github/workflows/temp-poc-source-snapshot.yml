@@ -1,31 +1,71 @@
-name: Temporary POC source snapshot
+name: Temporary apply verified POC handler
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/temp-poc-source-snapshot.yml"
   push:
     branches:
       - agent/add-vk-poc-only-handler
     paths:
       - ".github/workflows/temp-poc-source-snapshot.yml"
+      - ".github/patches/poc-handler.patch.b64"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  snapshot:
+  apply-test-commit:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/upload-artifact@v4
+      - name: Checkout working branch
+        uses: actions/checkout@v4
         with:
-          name: poc-source-${{ github.sha }}
-          retention-days: 1
-          include-hidden-files: true
-          path: |
-            creator-app/**
-            PRODUCT.md
-            CHANGELOG.md
-            docs/poc/wlb-poc1.md
+          ref: agent/add-vk-poc-only-handler
+          fetch-depth: 0
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: creator-app/package-lock.json
+
+      - name: Decode and apply reviewed patch
+        shell: bash
+        run: |
+          base64 --decode .github/patches/poc-handler.patch.b64 > /tmp/poc-handler.patch
+          echo "5764fba208cc330f9e970ddf239ec7e8e01bb922d36acbbd5000121f56df6efe  /tmp/poc-handler.patch" | sha256sum --check
+          git apply --check /tmp/poc-handler.patch
+          git apply /tmp/poc-handler.patch
+
+      - name: Build, lint and test Creator
+        working-directory: creator-app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npm run lint
+          npm test
+
+      - name: Configure Electron sandbox helper
+        working-directory: creator-app
+        shell: bash
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+          test "$(stat -c '%U:%G %a' node_modules/electron/dist/chrome-sandbox)" = "root:root 4755"
+
+      - name: Electron renderer isolation smoke test
+        working-directory: creator-app
+        run: xvfb-run -a npm run smoke:electron
+
+      - name: Commit verified source tree
+        shell: bash
+        run: |
+          rm -f .github/patches/poc-handler.patch.b64
+          rm -f .github/workflows/temp-poc-source-snapshot.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "security(creator): isolate WLB-POC/1 ping handler"
+          git push origin HEAD:agent/add-vk-poc-only-handler
