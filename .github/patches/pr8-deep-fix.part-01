@@ -1,0 +1,183 @@
++          });
++        }, { once: true });
++      });
++    },
++  });
++
++  assert.equal(await manager.start(), true);
++  await waitFor(() => pollStarted);
++  await manager.stopAndWait();
++  assert.equal(pollSettled, true);
++});
+diff --git a/creator-app/src/bot/bot-manager.ts b/creator-app/src/bot/bot-manager.ts
+index a31e142..76aa7da 100644
+--- a/creator-app/src/bot/bot-manager.ts
++++ b/creator-app/src/bot/bot-manager.ts
+@@ -290,6 +290,12 @@ export class BotManager {
+     console.log('[BOT] Stopped');
+   }
+ 
++  async stopAndWait(): Promise<void> {
++    const task = this.pollTask;
++    this.stop();
++    if (task) await task.catch(() => {});
++  }
++
+   private async pollOnce(): Promise<LongPollData> {
+     if (!this.server || !this.key || !this.ts) {
+       throw new BotSecurityError('INVALID_STATE', 'VK Long Poll is not initialized');
+diff --git a/creator-app/src/main/ephemeral-cookie-file.test.ts b/creator-app/src/main/ephemeral-cookie-file.test.ts
+index 40ae0af..06584f7 100644
+--- a/creator-app/src/main/ephemeral-cookie-file.test.ts
++++ b/creator-app/src/main/ephemeral-cookie-file.test.ts
+@@ -22,9 +22,10 @@ test('cookie material is written to a random ephemeral directory and removed by
+       const mode = (await fs.stat(lease.filePath)).mode & 0o777;
+       assert.equal(mode, 0o600);
+     }
+-    await lease.cleanup();
++    assert.equal(await lease.cleanup(), true);
+     await assert.rejects(fs.stat(lease.directory), /ENOENT/);
+-    await lease.cleanup();
++    assert.equal(await lease.cleanup(), true);
++    assert.equal(lease.cleanupSync(), true);
+   } finally {
+     await fs.rm(root, { recursive: true, force: true });
+   }
+diff --git a/creator-app/src/main/ephemeral-cookie-file.ts b/creator-app/src/main/ephemeral-cookie-file.ts
+index 49e0c8a..db1100d 100644
+--- a/creator-app/src/main/ephemeral-cookie-file.ts
++++ b/creator-app/src/main/ephemeral-cookie-file.ts
+@@ -9,8 +9,8 @@ export const DEFAULT_STALE_COOKIE_AGE_MS = 24 * 60 * 60 * 1000;
+ export interface EphemeralCookieFile {
+   filePath: string;
+   directory: string;
+-  cleanup(): Promise<void>;
+-  cleanupSync(): void;
++  cleanup(): Promise<boolean>;
++  cleanupSync(): boolean;
+ }
+ 
+ export async function createEphemeralCookieFile(
+@@ -34,20 +34,35 @@ export async function createEphemeralCookieFile(
+   }
+ 
+   let cleaned = false;
++  let cleanupInFlight: Promise<boolean> | null = null;
+   return {
+     filePath,
+     directory,
+     async cleanup() {
+-      if (cleaned) return;
+-      cleaned = true;
+-      await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
++      if (cleaned) return true;
++      if (cleanupInFlight) return cleanupInFlight;
++      cleanupInFlight = (async () => {
++        try {
++          await fs.rm(directory, { recursive: true, force: true });
++          cleaned = true;
++          return true;
++        } catch {
++          return false;
++        } finally {
++          cleanupInFlight = null;
++        }
++      })();
++      return cleanupInFlight;
+     },
+     cleanupSync() {
+-      if (cleaned) return;
+-      cleaned = true;
++      if (cleaned) return true;
+       try {
+         fsSync.rmSync(directory, { recursive: true, force: true });
+-      } catch {}
++        cleaned = true;
++        return true;
++      } catch {
++        return false;
++      }
+     },
+   };
+ }
+@@ -87,15 +102,17 @@ export async function removeLegacyPersistentCookieFiles(userDataDirectory: strin
+     'cookies-dion.json',
+   ];
+   let removed = 0;
++  let failed = false;
+   for (const name of legacyNames) {
+     try {
+       await fs.unlink(path.join(userDataDirectory, name));
+       removed += 1;
+     } catch (error) {
+-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+-        // Best-effort cleanup. The caller must not log paths or cookie content.
+-      }
++      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') failed = true;
+     }
+   }
++  if (failed) {
++    throw new Error('Legacy plaintext cookie files could not be removed');
++  }
+   return removed;
+ }
+diff --git a/creator-app/src/main/index.ts b/creator-app/src/main/index.ts
+index 577aec7..df9e489 100644
+--- a/creator-app/src/main/index.ts
++++ b/creator-app/src/main/index.ts
+@@ -61,7 +61,7 @@ if (!hasSingleInstanceLock) {
+       tabManager.setUpstreamProxy({ socks: '', user: '', pass: '' });
+     }
+ 
+-    await cleanupStaleCookieDirectories();
++    await cleanupStaleCookieDirectories(os.tmpdir(), 0);
+     await removeLegacyPersistentCookieFiles(app.getPath('userData'));
+ 
+     registerIpcHandlers(tabManager, protectedSettings, botCommandMode);
+@@ -79,18 +79,25 @@ if (!hasSingleInstanceLock) {
+   });
+ }
+ 
+-app.on('window-all-closed', () => {
+-  tabManager.killAllRelays();
+-  app.quit();
++let gracefulShutdownStarted = false;
++
++app.on('window-all-closed', () => app.quit());
++app.on('before-quit', (event) => {
++  if (gracefulShutdownStarted) return;
++  event.preventDefault();
++  gracefulShutdownStarted = true;
++  void tabManager.stopAllRelaysAndWait()
++    .catch(() => tabManager.killAllRelays())
++    .finally(() => app.quit());
+ });
+ 
+-app.on('before-quit', () => tabManager.killAllRelays());
+ process.on('exit', () => tabManager.killAllRelays());
+-process.on('SIGINT', () => {
+-  tabManager.killAllRelays();
+-  process.exit();
+-});
+-process.on('SIGTERM', () => {
+-  tabManager.killAllRelays();
+-  process.exit();
+-});
++const exitAfterCleanup = (): void => {
++  if (gracefulShutdownStarted) return;
++  gracefulShutdownStarted = true;
++  void tabManager.stopAllRelaysAndWait()
++    .catch(() => tabManager.killAllRelays())
++    .finally(() => process.exit());
++};
++process.on('SIGINT', exitAfterCleanup);
++process.on('SIGTERM', exitAfterCleanup);
+diff --git a/creator-app/src/main/ipc.ts b/creator-app/src/main/ipc.ts
+index 826fcf3..b327767 100644
+--- a/creator-app/src/main/ipc.ts
++++ b/creator-app/src/main/ipc.ts
+@@ -29,6 +29,7 @@ import {
+ import {
+   ProtectedSettingsError,
+   ProtectedSettingsStore,
++  validateProtectedSettingsUpdate,
