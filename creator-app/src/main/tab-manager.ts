@@ -45,6 +45,7 @@ import {
   EphemeralCookieFile,
 } from './ephemeral-cookie-file';
 import { cookieDomainMatchesRoots } from './cookie-domain-policy';
+import { terminateChildProcess } from './process-termination';
 
 interface ProcessOutputOptions {
   headless?: boolean;
@@ -66,6 +67,8 @@ export class TabManager {
   private hooksDir: string;
   private upstreamProxy: UpstreamProxy = { socks: '', user: '', pass: '' };
   private cookieLeases = new Map<ChildProcess, EphemeralCookieFile>();
+  private activeProcesses = new Set<ChildProcess>();
+  private secretGeneration = 0;
 
   constructor() {
     this.relayPath = resolveResourcePath(
@@ -267,8 +270,9 @@ export class TabManager {
     if (this.upstreamProxy.pass) args.push('--upstream-pass', this.upstreamProxy.pass);
   }
 
-  startRelay(tabId: string, tab: TabState): void {
-    this.killRelay(tabId, tab);
+  async startRelay(tabId: string, tab: TabState): Promise<void> {
+    await this.stopRelayAndWait(tabId, tab);
+    if (this.tabs.get(tabId) !== tab) return;
     const port = tab.tunnelMode === TunnelMode.PionVideo ? tab.pionPort : tab.dcPort;
     let relayMode: RelayMode = RelayMode.DCCreator;
     if (tab.tunnelMode === TunnelMode.PionVideo) {
@@ -281,9 +285,11 @@ export class TabManager {
     const proc = spawn(this.relayPath, relayArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    this.trackProcess(proc);
     tab.relay = proc;
     this.attachProcessOutput(proc, tabId);
     proc.on('close', (code) => {
+      if (tab.relay === proc) tab.relay = null;
       this.sendLog(tabId, `Relay exited with code ${code}`);
     });
   }
@@ -405,7 +411,8 @@ export class TabManager {
       cookies = await this.getCookiesForDomains(config.cookieDomains);
     }
     this.sendLog(tabId, `${config.platformName} session cookies prepared (${cookies.length}).`);
-    this.killRelay(tabId, tab);
+    await this.stopRelayAndWait(tabId, tab);
+    if (this.tabs.get(tabId) !== tab) return;
     const cookieLease = await createEphemeralCookieFile(cookies);
     const spawnArgs = ['--resources', 'default', '--cookies', cookieLease.filePath];
     if (joinTarget) {
@@ -413,6 +420,7 @@ export class TabManager {
       if (flag) spawnArgs.push(flag, joinTarget);
     }
     this.appendUpstreamArgs(spawnArgs);
+    const launchGeneration = this.secretGeneration;
     let proc: ChildProcess;
     try {
       proc = spawn(config.binaryPath, spawnArgs, {
@@ -422,6 +430,7 @@ export class TabManager {
       await cookieLease.cleanup();
       throw error;
     }
+    this.trackProcess(proc);
     this.trackCookieLease(proc, cookieLease);
     tab.relay = proc;
     let sawAuthFailure = false;
@@ -439,10 +448,22 @@ export class TabManager {
       },
     });
     proc.on('close', async (code) => {
+      const wasCurrent = this.tabs.get(tabId) === tab && tab.relay === proc;
+      if (tab.relay === proc) tab.relay = null;
       this.sendLog(tabId, `Headless exited with code ${code}`);
-      if (sawAuthFailure) {
+      if (
+        sawAuthFailure &&
+        wasCurrent &&
+        launchGeneration === this.secretGeneration
+      ) {
         await this.clearAuthCookies(config.cookieDomains, config.authCookie);
-        if (this.tabs.get(tabId) === tab) this.startHeadless(tabId, platform, args);
+        if (
+          this.tabs.get(tabId) === tab &&
+          tab.relay == null &&
+          launchGeneration === this.secretGeneration
+        ) {
+          void this.startHeadless(tabId, platform, args);
+        }
       }
     });
   }
@@ -510,33 +531,92 @@ export class TabManager {
     });
   }
 
+  invalidateSecretConsumers(): void {
+    this.secretGeneration += 1;
+  }
+
+  private trackProcess(proc: ChildProcess): void {
+    this.activeProcesses.add(proc);
+    const forget = (): void => {
+      this.activeProcesses.delete(proc);
+    };
+    proc.once('close', forget);
+    proc.once('error', () => {
+      if (proc.pid == null || proc.exitCode !== null || proc.signalCode !== null) forget();
+    });
+  }
+
   private trackCookieLease(proc: ChildProcess, lease: EphemeralCookieFile): void {
     this.cookieLeases.set(proc, lease);
-    const cleanup = (): void => this.cleanupCookieLease(proc);
+    const cleanup = (): void => {
+      void this.cleanupCookieLease(proc);
+    };
     proc.once('error', cleanup);
     proc.once('close', cleanup);
   }
 
-  private cleanupCookieLease(proc: ChildProcess): void {
+  private async cleanupCookieLease(proc: ChildProcess): Promise<boolean> {
     const lease = this.cookieLeases.get(proc);
-    if (!lease) return;
-    this.cookieLeases.delete(proc);
-    lease.cleanupSync();
+    if (!lease) return true;
+    const cleaned = await lease.cleanup();
+    if (cleaned) this.cookieLeases.delete(proc);
+    return cleaned;
+  }
+
+  private async stopRelayAndWait(tabId: string, tab: TabState): Promise<void> {
+    const proc = tab.relay;
+    if (!proc) return;
+    tab.relay = null;
+    console.log(`[${tabId}] stopping process pid=${proc.pid}`);
+    await terminateChildProcess(proc);
+    this.activeProcesses.delete(proc);
+    if (!(await this.cleanupCookieLease(proc))) {
+      throw new Error('Temporary cookie material could not be removed');
+    }
   }
 
   killRelay(tabId: string, tab: TabState): void {
-    if (tab.relay) {
-      const proc = tab.relay;
-      console.log(`[${tabId}] killing process pid=${proc.pid}`);
+    if (!tab.relay) return;
+    const proc = tab.relay;
+    tab.relay = null;
+    console.log(`[${tabId}] killing process pid=${proc.pid}`);
+    try {
       proc.kill();
-      this.cleanupCookieLease(proc);
-      tab.relay = null;
+    } catch {}
+    if (proc.pid == null || proc.exitCode !== null || proc.signalCode !== null) {
+      void this.cleanupCookieLease(proc);
     }
+  }
+
+  async stopAllRelaysAndWait(): Promise<void> {
+    const processes = new Set<ChildProcess>([
+      ...this.activeProcesses,
+      ...this.cookieLeases.keys(),
+    ]);
+    this.tabs.forEach((tab) => {
+      if (tab.relay) processes.add(tab.relay);
+      tab.relay = null;
+    });
+
+    await Promise.all(Array.from(processes).map(async (proc) => {
+      await terminateChildProcess(proc);
+      this.activeProcesses.delete(proc);
+      if (!(await this.cleanupCookieLease(proc))) {
+        throw new Error('Temporary cookie material could not be removed');
+      }
+    }));
   }
 
   killAllRelays(): void {
     this.tabs.forEach((tab, tabId) => this.killRelay(tabId, tab));
-    for (const proc of Array.from(this.cookieLeases.keys())) this.cleanupCookieLease(proc);
+    for (const proc of Array.from(this.activeProcesses)) {
+      try {
+        proc.kill();
+      } catch {}
+    }
+    for (const [proc, lease] of Array.from(this.cookieLeases.entries())) {
+      if (lease.cleanupSync()) this.cookieLeases.delete(proc);
+    }
   }
 
   async loadHook(tabId: string, url: string, tab: TabState): Promise<string> {
@@ -568,8 +648,10 @@ export class TabManager {
       mode === TunnelMode.HeadlessWBStream ||
       mode === TunnelMode.HeadlessDion
     ) return;
-    this.killRelay(tabId, tab);
-    setTimeout(() => this.startRelay(tabId, tab), RELAY_RESTART_DELAY_MS);
+    await this.stopRelayAndWait(tabId, tab);
+    await new Promise((resolve) => setTimeout(resolve, RELAY_RESTART_DELAY_MS));
+    if (this.tabs.get(tabId) !== tab) return;
+    await this.startRelay(tabId, tab);
   }
 
   private async getCookiesForDomains(domains: string[]): Promise<{ name: string; value: string }[]> {

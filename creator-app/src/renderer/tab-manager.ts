@@ -13,6 +13,8 @@ import {
 import { applyHeadlessProcessEvent } from './headless-event-state';
 import {
   collectLegacyPlaintextSettings,
+  legacyMigrationIsConfirmed,
+  legacySecretsResolvedAfterSave,
   removeLegacyPlaintextSettings,
 } from './protected-settings-migration';
 
@@ -43,10 +45,23 @@ export class RendererTabManager {
     if (legacy.hadLegacy) {
       let migrated = false;
       try {
-        this.settingsView = await window.bridge.migrateLegacySettings(legacy);
+        const migratedView = await window.bridge.migrateLegacySettings(legacy);
+        if (!legacyMigrationIsConfirmed(legacy, migratedView)) {
+          throw new Error('Protected migration could not be confirmed.');
+        }
+        this.settingsView = migratedView;
         migrated = true;
       } catch {
-        this.settingsView = await window.bridge.getProtectedSettings();
+        const current = await window.bridge.getProtectedSettings();
+        this.settingsView = {
+          ...current,
+          protection: {
+            ...current.protection,
+            warning:
+              current.protection.warning ||
+              'Legacy plaintext migration is pending. Re-enter and save secrets before live use.',
+          },
+        };
       }
       if (migrated && !removeLegacyPlaintextSettings(localStorage)) {
         throw new Error('Protected migration succeeded, but legacy plaintext could not be removed.');
@@ -63,12 +78,18 @@ export class RendererTabManager {
   }
 
   async saveProtectedSettings(update: ProtectedSettingsUpdate): Promise<void> {
+    const legacy = collectLegacyPlaintextSettings(localStorage);
     this.settingsView = await window.bridge.saveProtectedSettings(update);
+    this.botRunning = false;
+    localStorage.setItem('botEnabled', 'false');
+    if (!legacySecretsResolvedAfterSave(legacy, update, this.settingsView)) {
+      throw new Error(
+        'Protected settings were saved, but legacy secrets are not confirmed in protected storage.',
+      );
+    }
     if (!removeLegacyPlaintextSettings(localStorage)) {
       throw new Error('Protected settings were saved, but legacy plaintext could not be removed.');
     }
-    this.botRunning = false;
-    localStorage.setItem('botEnabled', 'false');
     this.onRender();
   }
 

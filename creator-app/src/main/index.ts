@@ -61,7 +61,7 @@ if (!hasSingleInstanceLock) {
       tabManager.setUpstreamProxy({ socks: '', user: '', pass: '' });
     }
 
-    await cleanupStaleCookieDirectories();
+    await cleanupStaleCookieDirectories(os.tmpdir(), 0);
     await removeLegacyPersistentCookieFiles(app.getPath('userData'));
 
     registerIpcHandlers(tabManager, protectedSettings, botCommandMode);
@@ -79,18 +79,25 @@ if (!hasSingleInstanceLock) {
   });
 }
 
-app.on('window-all-closed', () => {
-  tabManager.killAllRelays();
-  app.quit();
+let gracefulShutdownStarted = false;
+
+app.on('window-all-closed', () => app.quit());
+app.on('before-quit', (event) => {
+  if (gracefulShutdownStarted) return;
+  event.preventDefault();
+  gracefulShutdownStarted = true;
+  void tabManager.stopAllRelaysAndWait()
+    .catch(() => tabManager.killAllRelays())
+    .finally(() => app.quit());
 });
 
-app.on('before-quit', () => tabManager.killAllRelays());
 process.on('exit', () => tabManager.killAllRelays());
-process.on('SIGINT', () => {
-  tabManager.killAllRelays();
-  process.exit();
-});
-process.on('SIGTERM', () => {
-  tabManager.killAllRelays();
-  process.exit();
-});
+const exitAfterCleanup = (): void => {
+  if (gracefulShutdownStarted) return;
+  gracefulShutdownStarted = true;
+  void tabManager.stopAllRelaysAndWait()
+    .catch(() => tabManager.killAllRelays())
+    .finally(() => process.exit());
+};
+process.on('SIGINT', exitAfterCleanup);
+process.on('SIGTERM', exitAfterCleanup);

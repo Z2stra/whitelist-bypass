@@ -29,12 +29,13 @@ function proxyUpdates(
   if (clear) {
     return { username: { action: 'clear' }, password: { action: 'clear' } };
   }
-  if (username.length === 0 && password.length === 0) {
-    return { username: { action: 'keep' }, password: { action: 'keep' } };
-  }
   return {
-    username: { action: 'replace', value: username },
-    password: { action: 'replace', value: password },
+    username: username.length > 0
+      ? { action: 'replace', value: username }
+      : { action: 'keep' },
+    password: password.length > 0
+      ? { action: 'replace', value: password }
+      : { action: 'keep' },
   };
 }
 

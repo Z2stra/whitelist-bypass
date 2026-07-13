@@ -9,8 +9,8 @@ export const DEFAULT_STALE_COOKIE_AGE_MS = 24 * 60 * 60 * 1000;
 export interface EphemeralCookieFile {
   filePath: string;
   directory: string;
-  cleanup(): Promise<void>;
-  cleanupSync(): void;
+  cleanup(): Promise<boolean>;
+  cleanupSync(): boolean;
 }
 
 export async function createEphemeralCookieFile(
@@ -34,20 +34,35 @@ export async function createEphemeralCookieFile(
   }
 
   let cleaned = false;
+  let cleanupInFlight: Promise<boolean> | null = null;
   return {
     filePath,
     directory,
     async cleanup() {
-      if (cleaned) return;
-      cleaned = true;
-      await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
+      if (cleaned) return true;
+      if (cleanupInFlight) return cleanupInFlight;
+      cleanupInFlight = (async () => {
+        try {
+          await fs.rm(directory, { recursive: true, force: true });
+          cleaned = true;
+          return true;
+        } catch {
+          return false;
+        } finally {
+          cleanupInFlight = null;
+        }
+      })();
+      return cleanupInFlight;
     },
     cleanupSync() {
-      if (cleaned) return;
-      cleaned = true;
+      if (cleaned) return true;
       try {
         fsSync.rmSync(directory, { recursive: true, force: true });
-      } catch {}
+        cleaned = true;
+        return true;
+      } catch {
+        return false;
+      }
     },
   };
 }
@@ -87,15 +102,17 @@ export async function removeLegacyPersistentCookieFiles(userDataDirectory: strin
     'cookies-dion.json',
   ];
   let removed = 0;
+  let failed = false;
   for (const name of legacyNames) {
     try {
       await fs.unlink(path.join(userDataDirectory, name));
       removed += 1;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        // Best-effort cleanup. The caller must not log paths or cookie content.
-      }
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') failed = true;
     }
+  }
+  if (failed) {
+    throw new Error('Legacy plaintext cookie files could not be removed');
   }
   return removed;
 }

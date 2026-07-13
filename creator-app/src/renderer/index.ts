@@ -241,11 +241,11 @@ async function openSettings(): Promise<void> {
     : 'vk1.a.xxx...';
   proxyUser.value = '';
   proxyUser.placeholder = view.proxy.usernameConfigured
-    ? 'Stored securely — re-enter both fields to replace'
+    ? 'Stored securely — leave blank to keep'
     : 'optional';
   proxyPass.value = '';
   proxyPass.placeholder = view.proxy.passwordConfigured
-    ? 'Stored securely — re-enter both fields to replace'
+    ? 'Stored securely — leave blank to keep'
     : 'optional';
   clearToken.checked = false;
   clearProxy.checked = false;

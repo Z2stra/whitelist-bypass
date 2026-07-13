@@ -65,7 +65,10 @@ The migration is idempotent and never overwrites an already configured protected
 - Proxy username/password values are treated as opaque credentials and are not trimmed or normalized.
 - The encrypted envelope is written through a random temporary file and then replaced.
 - File permissions are requested as `0600` where the operating system supports POSIX modes.
-- An unreadable, unsupported or undecryptable store is quarantined with a `.corrupt-<timestamp>` suffix when possible.
+- An unreadable or undecryptable store is quarantined with a `.corrupt-<timestamp>` suffix when possible.
+- A store written by a newer Creator version is preserved unchanged and blocks downgrade writes until Creator is updated.
+- Credential rotation is serialized with consumer starts and waits for BotManager and every tracked relay/headless process to exit before new values are persisted and activated.
+- Authentication-failure auto-restart is generation-bound and cannot revive a process after credential rotation.
 - Error paths return generic messages and do not log ciphertext, plaintext or filesystem paths containing private data.
 - A dedicated Windows GitHub Actions smoke test writes synthetic credentials, checks that they do not appear in the file or renderer projection, reloads the file through DPAPI and verifies successful decryption.
 
@@ -79,7 +82,8 @@ The following risks were reduced:
 - Old `cookies-*.json` files in the application-data directory are deleted on startup.
 - Each headless launch receives a random, process-scoped temporary cookie file.
 - The temporary directory/file use restrictive modes where supported.
-- The file is deleted on child error, close, explicit kill and application shutdown.
+- The file is deleted after child exit; a failed Windows deletion remains retryable instead of being marked clean.
+- Normal application shutdown waits for child exit and cookie cleanup before quitting.
 - Stale crash remnants are removed on the next startup.
 - Cookie domain selection now requires an exact domain or proper subdomain boundary; lookalikes such as `evilvk.com` do not match `vk.com`.
 - Cookie values and WB device IDs are not written to normal Creator logs.

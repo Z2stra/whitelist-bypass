@@ -22,9 +22,10 @@ test('cookie material is written to a random ephemeral directory and removed by 
       const mode = (await fs.stat(lease.filePath)).mode & 0o777;
       assert.equal(mode, 0o600);
     }
-    await lease.cleanup();
+    assert.equal(await lease.cleanup(), true);
     await assert.rejects(fs.stat(lease.directory), /ENOENT/);
-    await lease.cleanup();
+    assert.equal(await lease.cleanup(), true);
+    assert.equal(lease.cleanupSync(), true);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

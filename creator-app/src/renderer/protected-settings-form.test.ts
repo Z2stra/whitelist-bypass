@@ -52,3 +52,20 @@ test('protection summary never contains secret values', () => {
   assert.match(summary, /Windows DPAPI/);
   assert.equal(summary.includes('token'), false);
 });
+
+
+test('proxy username and password can be replaced independently without clearing the other secret', () => {
+  const usernameOnly = buildProtectedSettingsUpdate({
+    groupId: '', userId: '', token: '', clearToken: false,
+    socks: 'proxy:1080', proxyUsername: 'new-user', proxyPassword: '', clearProxyCredentials: false,
+  });
+  assert.deepEqual(usernameOnly.proxy.username, { action: 'replace', value: 'new-user' });
+  assert.deepEqual(usernameOnly.proxy.password, { action: 'keep' });
+
+  const passwordOnly = buildProtectedSettingsUpdate({
+    groupId: '', userId: '', token: '', clearToken: false,
+    socks: 'proxy:1080', proxyUsername: '', proxyPassword: 'new-pass', clearProxyCredentials: false,
+  });
+  assert.deepEqual(passwordOnly.proxy.username, { action: 'keep' });
+  assert.deepEqual(passwordOnly.proxy.password, { action: 'replace', value: 'new-pass' });
+});

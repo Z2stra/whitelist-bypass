@@ -335,3 +335,30 @@ test('Long Poll retry delay uses bounded exponential backoff with jitter', () =>
   assert.equal(calculateBackoffMs(2, 1000, 30_000, 1), 2500);
   assert.equal(calculateBackoffMs(10, 1000, 30_000, 1), 30_000);
 });
+
+
+test('stopAndWait waits until the aborted Long Poll task settles', async () => {
+  let pollStarted = false;
+  let pollSettled = false;
+  const manager = createManager({
+    fetch: async (url, init) => {
+      if (url.endsWith('/groups.getLongPollServer')) {
+        return jsonResponse({ response: { server: 'https://lp.vk.com/check', key: 'key', ts: '1' } });
+      }
+      pollStarted = true;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          setImmediate(() => {
+            pollSettled = true;
+            reject(abortError());
+          });
+        }, { once: true });
+      });
+    },
+  });
+
+  assert.equal(await manager.start(), true);
+  await waitFor(() => pollStarted);
+  await manager.stopAndWait();
+  assert.equal(pollSettled, true);
+});

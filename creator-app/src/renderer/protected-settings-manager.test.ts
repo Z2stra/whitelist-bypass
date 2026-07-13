@@ -103,3 +103,56 @@ test('successful protected migration does not hide a legacy plaintext cleanup fa
     restore();
   }
 });
+
+
+test('migration confirmation refuses to delete a legacy secret missing from protected projection', async () => {
+  const storage = new MemoryStorage();
+  storage.setItem(
+    LEGACY_BOT_SETTINGS_KEY,
+    JSON.stringify({ token: 'legacy-token', groupId: '42', userId: '1' }),
+  );
+  const unconfirmed = {
+    ...VIEW,
+    bot: { ...VIEW.bot, tokenConfigured: false },
+  };
+  const restore = installGlobals(storage, {
+    migrateLegacySettings: async () => unconfirmed,
+    getProtectedSettings: async () => unconfirmed,
+  });
+  try {
+    const manager = new RendererTabManager(() => {});
+    await manager.initializeProtectedSettings();
+    assert.notEqual(storage.getItem(LEGACY_BOT_SETTINGS_KEY), null);
+  } finally {
+    restore();
+  }
+});
+
+test('a later keep-only save cannot delete a legacy token that was never protected', async () => {
+  const storage = new MemoryStorage();
+  storage.setItem(
+    LEGACY_BOT_SETTINGS_KEY,
+    JSON.stringify({ token: 'legacy-token', groupId: '42', userId: '1' }),
+  );
+  const unconfirmed = {
+    ...VIEW,
+    bot: { ...VIEW.bot, tokenConfigured: false },
+  };
+  const restore = installGlobals(storage, {
+    saveProtectedSettings: async () => unconfirmed,
+  });
+  try {
+    const manager = new RendererTabManager(() => {});
+    await assert.rejects(
+      manager.saveProtectedSettings({
+        bot: { groupId: '42', userId: '1', token: { action: 'keep' } },
+        proxy: { socks: '', username: { action: 'keep' }, password: { action: 'keep' } },
+      }),
+      /legacy secrets are not confirmed/,
+    );
+    assert.notEqual(storage.getItem(LEGACY_BOT_SETTINGS_KEY), null);
+    assert.equal(manager.botRunning, false);
+  } finally {
+    restore();
+  }
+});

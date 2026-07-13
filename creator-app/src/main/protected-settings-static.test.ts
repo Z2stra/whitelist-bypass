@@ -85,13 +85,20 @@ test('protected settings are single-instance and stop all existing secret consum
   assert.notEqual(saveStart, -1);
   assert.notEqual(saveEnd, -1);
   const saveHandler = ipc.slice(saveStart, saveEnd);
-  assert.match(saveHandler, /protectedSettings\.applyUpdate/);
-  assert.match(saveHandler, /tabManager\.killAllRelays\(\)/);
+  assert.match(saveHandler, /validateProtectedSettingsUpdate/);
+  assert.match(saveHandler, /runSecretLifecycle/);
+  assert.match(saveHandler, /await stopSecretConsumers\(tabManager\)/);
   assert.ok(
-    saveHandler.indexOf('tabManager.killAllRelays()') <
-      saveHandler.indexOf('tabManager.setUpstreamProxy'),
-    'old child processes must stop before the new proxy credentials become active',
+    saveHandler.indexOf('await stopSecretConsumers(tabManager)') <
+      saveHandler.indexOf('protectedSettings.applyUpdate'),
+    'old secret consumers must exit before replacement credentials are persisted',
   );
+  assert.match(manager, /async stopAllRelaysAndWait/);
+  assert.match(manager, /activeProcesses = new Set<ChildProcess>/);
+  assert.match(manager, /await terminateChildProcess\(proc\)/);
+  assert.match(ipc, /runSecretLifecycle/);
+  assert.match(ipc, /tabManager\.invalidateSecretConsumers\(\)/);
   assert.equal(manager.includes("user: (proxy?.user || '').trim()"), false);
-  assert.match(form, /username: \{ action: 'replace', value: username \}/);
+  assert.match(form, /username:\s*username.length > 0[\s\S]*action: 'replace', value: username/);
+  assert.match(form, /password:\s*password.length > 0[\s\S]*action: 'replace', value: password/);
 });

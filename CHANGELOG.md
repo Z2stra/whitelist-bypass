@@ -65,6 +65,10 @@ All notable project changes made as part of the staged control-plane work are re
 - Tightened cookie-domain matching to exact roots/proper subdomains and removed WB device IDs/cookie details from normal logs.
 - Documented persistent Chromium-cookie, same-user DPAPI and child-process command-line residual risks.
 
+- Preserved newer protected-store versions instead of quarantining or overwriting them during downgrade.
+- Made credential rotation wait for BotManager/child exit and retry temporary cookie cleanup after Windows sharing failures.
+- Required migration confirmation before deleting legacy plaintext and allowed independent proxy credential replacement.
+
 ### Security status
 
 - VK transport hardening, typed headless process events, the isolated `WLB-POC/1` handler and the Electron IPC/remote-content trust boundary are implemented and tested.

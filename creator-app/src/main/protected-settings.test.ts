@@ -284,3 +284,28 @@ test('proxy credentials are opaque and survive protected-store round trips byte-
     assert.deepEqual(reloaded.getUpstreamProxy(), store.getUpstreamProxy());
   });
 });
+
+
+test('newer protected-store versions are preserved in place and block downgrade writes', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'wlb-newer-settings-test-'));
+  const filePath = path.join(directory, 'protected-settings.v1.json');
+  const original = JSON.stringify({ version: 2, ciphertext: 'QUJDRA==' });
+  try {
+    await fs.writeFile(filePath, original, 'utf8');
+    const store = new ProtectedSettingsStore(filePath, new XorCipher());
+    await store.initialize();
+    const view = store.getView();
+    assert.equal(view.protection.available, false);
+    assert.match(view.protection.warning || '', /newer Creator version/);
+    await assert.rejects(
+      store.applyUpdate(INITIAL_UPDATE),
+      (error: Error) =>
+        error instanceof ProtectedSettingsError && error.code === 'UNSUPPORTED_STORE_VERSION',
+    );
+    assert.equal(await fs.readFile(filePath, 'utf8'), original);
+    const files = await fs.readdir(directory);
+    assert.equal(files.some((name) => name.includes('.corrupt-')), false);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});

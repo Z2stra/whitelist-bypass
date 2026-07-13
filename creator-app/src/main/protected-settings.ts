@@ -194,6 +194,10 @@ function normalizeUpdate(value: unknown): ProtectedSettingsUpdate {
   };
 }
 
+export function validateProtectedSettingsUpdate(value: unknown): ProtectedSettingsUpdate {
+  return normalizeUpdate(value);
+}
+
 function normalizeLegacy(value: unknown): LegacyPlaintextSettings {
   const record = assertRecord(value, 'Legacy settings migration');
   const hadLegacy = record.hadLegacy === true;
@@ -257,7 +261,18 @@ function parseEnvelope(value: string): ProtectedSettingsEnvelope {
     throw new ProtectedSettingsError('CORRUPT_STORE', 'Protected settings envelope is invalid');
   }
   const record = assertRecord(parsed, 'Protected settings envelope');
-  if (record.version !== PROTECTED_SETTINGS_VERSION || typeof record.ciphertext !== 'string') {
+  if (record.version !== PROTECTED_SETTINGS_VERSION) {
+    const code = typeof record.version === 'number'
+      ? 'UNSUPPORTED_STORE_VERSION'
+      : 'CORRUPT_STORE';
+    throw new ProtectedSettingsError(
+      code,
+      code === 'UNSUPPORTED_STORE_VERSION'
+        ? 'Protected settings were created by a newer Creator version'
+        : 'Protected settings envelope is invalid',
+    );
+  }
+  if (typeof record.ciphertext !== 'string') {
     throw new ProtectedSettingsError('CORRUPT_STORE', 'Protected settings envelope is invalid');
   }
   if (
@@ -278,6 +293,7 @@ export class ProtectedSettingsStore {
     reason: 'Protected settings are not initialized',
   };
   private warning: string | undefined;
+  private blockingError: ProtectedSettingsError | undefined;
   private initialized = false;
   private filePresent = false;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -316,16 +332,18 @@ export class ProtectedSettingsStore {
       const plaintext = this.cipher.decrypt(encrypted);
       this.data = parsePlaintext(plaintext);
     } catch (error) {
+      if (error instanceof ProtectedSettingsError && error.code === 'UNSUPPORTED_STORE_VERSION') {
+        this.blockingError = error;
+        this.warning =
+          'Protected settings were created by a newer Creator version. Update Creator before changing credentials.';
+        return;
+      }
       const quarantined = await this.quarantineCorruptStore();
       this.data = emptyData();
       this.filePresent = !quarantined;
-      const format =
-        error instanceof ProtectedSettingsError && error.code === 'UNSUPPORTED_STORE_VERSION'
-          ? 'used an unsupported format'
-          : 'could not be decrypted';
       this.warning = quarantined
-        ? `Protected settings ${format} and were moved aside; re-enter credentials.`
-        : `Protected settings ${format}; the original file could not be moved aside. Re-enter credentials to replace it.`;
+        ? 'Protected settings could not be decrypted and were moved aside; re-enter credentials.'
+        : 'Protected settings could not be decrypted; the original file could not be moved aside.';
     }
   }
 
@@ -333,7 +351,7 @@ export class ProtectedSettingsStore {
     this.assertInitialized();
     return {
       protection: {
-        available: this.cipherStatus.available,
+        available: this.cipherStatus.available && !this.blockingError,
         backend: this.cipherStatus.backend,
         warning: this.warning || this.cipherStatus.reason,
       },
@@ -358,6 +376,10 @@ export class ProtectedSettingsStore {
   getUpstreamProxy(): UpstreamProxy {
     this.assertAvailable();
     return { ...this.data.proxy };
+  }
+
+  ensureWritable(): void {
+    this.assertAvailable();
   }
 
   async applyUpdate(value: unknown): Promise<ProtectedSettingsView> {
@@ -433,6 +455,9 @@ export class ProtectedSettingsStore {
         'ENCRYPTION_UNAVAILABLE',
         this.cipherStatus.reason || 'OS-protected encryption is unavailable',
       );
+    }
+    if (this.blockingError) {
+      throw new ProtectedSettingsError(this.blockingError.code, this.blockingError.message);
     }
   }
 
