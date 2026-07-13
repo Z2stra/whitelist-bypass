@@ -9,13 +9,16 @@ import {
   closeError,
   clearLog,
   saveLogs,
-  exportCookiesZip,
   copyToClipboard,
   renameTab,
   attachLoginWebview,
   detachLoginWebview,
 } from './dom';
 import { VK_IM_URL, TELEMOST_URL } from '../constants';
+import {
+  buildProtectedSettingsUpdate,
+  protectionSummary,
+} from './protected-settings-form';
 import {
   Platform,
   Bridge,
@@ -75,30 +78,73 @@ function bindToolbarEvents(): void {
 }
 
 function bindActionBarEvents(): void {
-  document.getElementById('btnExportCookies')!.addEventListener('click', exportCookiesZip);
-  document.getElementById('btnSettings')!.addEventListener('click', openSettings);
+  document.getElementById('btnSettings')!.addEventListener('click', () => {
+    void openSettings();
+  });
   document.getElementById('tabBot')!.addEventListener('click', () => {
-    if (!tm.botSettings.token || !tm.botSettings.groupId) {
-      openSettings();
-      return;
-    }
-    tm.toggleBot();
+    void (async () => {
+      if (!tm.hasBotConfiguration()) {
+        await openSettings();
+        return;
+      }
+      try {
+        await tm.toggleBot();
+      } catch (error) {
+        showError(error instanceof Error ? error.message : 'VK bot operation failed.');
+      }
+    })();
   });
 }
 
 function bindSettingsEvents(): void {
   document.getElementById('btnSettingsCancel')!.addEventListener('click', closeSettings);
-  document.getElementById('btnSettingsSave')!.addEventListener('click', () => {
-    tm.botSettings.token = (document.getElementById('vkToken') as HTMLInputElement).value.trim();
-    tm.botSettings.groupId = (document.getElementById('vkGroupId') as HTMLInputElement).value.trim();
-    tm.botSettings.userId = (document.getElementById('vkUserId') as HTMLInputElement).value.trim();
-    tm.saveBotSettings();
-    tm.upstreamProxy.socks = (document.getElementById('upstreamSocks') as HTMLInputElement).value.trim();
-    tm.upstreamProxy.user = (document.getElementById('upstreamUser') as HTMLInputElement).value.trim();
-    tm.upstreamProxy.pass = (document.getElementById('upstreamPass') as HTMLInputElement).value.trim();
-    tm.saveUpstreamProxy();
-    closeSettings();
+  const tokenInput = document.getElementById('vkToken') as HTMLInputElement;
+  const clearToken = document.getElementById('clearVkToken') as HTMLInputElement;
+  const proxyUser = document.getElementById('upstreamUser') as HTMLInputElement;
+  const proxyPass = document.getElementById('upstreamPass') as HTMLInputElement;
+  const clearProxy = document.getElementById('clearUpstreamCredentials') as HTMLInputElement;
+
+  clearToken.addEventListener('change', () => {
+    tokenInput.disabled = clearToken.checked;
+    if (clearToken.checked) tokenInput.value = '';
   });
+  clearProxy.addEventListener('change', () => {
+    proxyUser.disabled = clearProxy.checked;
+    proxyPass.disabled = clearProxy.checked;
+    if (clearProxy.checked) {
+      proxyUser.value = '';
+      proxyPass.value = '';
+    }
+  });
+
+  document.getElementById('btnSettingsSave')!.addEventListener('click', () => {
+    void (async () => {
+      const saveButton = document.getElementById('btnSettingsSave') as HTMLButtonElement;
+      saveButton.disabled = true;
+      try {
+        const update = buildProtectedSettingsUpdate({
+          token: tokenInput.value,
+          clearToken: clearToken.checked,
+          groupId: (document.getElementById('vkGroupId') as HTMLInputElement).value,
+          userId: (document.getElementById('vkUserId') as HTMLInputElement).value,
+          socks: (document.getElementById('upstreamSocks') as HTMLInputElement).value,
+          proxyUsername: proxyUser.value,
+          proxyPassword: proxyPass.value,
+          clearProxyCredentials: clearProxy.checked,
+        });
+        await tm.saveProtectedSettings(update);
+        tokenInput.value = '';
+        proxyUser.value = '';
+        proxyPass.value = '';
+        closeSettings();
+      } catch (error) {
+        showError(error instanceof Error ? error.message : 'Protected settings could not be saved.');
+      } finally {
+        saveButton.disabled = false;
+      }
+    })();
+  });
+
   document.querySelectorAll('.btn-clear-cookies').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const platform = (btn as HTMLElement).dataset.platform!;
@@ -174,22 +220,71 @@ function clearHeadlessJoinError(): void {
   input.classList.remove('invalid');
 }
 
-function openSettings(): void {
-  document.getElementById('settingsPopup')!.classList.add('visible');
-  (document.getElementById('vkToken') as HTMLInputElement).value = tm.botSettings.token;
-  (document.getElementById('vkGroupId') as HTMLInputElement).value = tm.botSettings.groupId;
-  (document.getElementById('vkUserId') as HTMLInputElement).value = tm.botSettings.userId;
-  (document.getElementById('upstreamSocks') as HTMLInputElement).value = tm.upstreamProxy.socks;
-  (document.getElementById('upstreamUser') as HTMLInputElement).value = tm.upstreamProxy.user;
-  (document.getElementById('upstreamPass') as HTMLInputElement).value = tm.upstreamProxy.pass;
+async function openSettings(): Promise<void> {
+  try {
+    await tm.refreshProtectedSettings();
+  } catch (error) {
+    showError(error instanceof Error ? error.message : 'Protected settings could not be loaded.');
+    return;
+  }
+
+  const view = tm.settingsView;
+  const tokenInput = document.getElementById('vkToken') as HTMLInputElement;
+  const proxyUser = document.getElementById('upstreamUser') as HTMLInputElement;
+  const proxyPass = document.getElementById('upstreamPass') as HTMLInputElement;
+  const clearToken = document.getElementById('clearVkToken') as HTMLInputElement;
+  const clearProxy = document.getElementById('clearUpstreamCredentials') as HTMLInputElement;
+
+  tokenInput.value = '';
+  tokenInput.placeholder = view.bot.tokenConfigured
+    ? 'Stored securely — leave blank to keep'
+    : 'vk1.a.xxx...';
+  proxyUser.value = '';
+  proxyUser.placeholder = view.proxy.usernameConfigured
+    ? 'Stored securely — re-enter both fields to replace'
+    : 'optional';
+  proxyPass.value = '';
+  proxyPass.placeholder = view.proxy.passwordConfigured
+    ? 'Stored securely — re-enter both fields to replace'
+    : 'optional';
+  clearToken.checked = false;
+  clearProxy.checked = false;
+  tokenInput.disabled = false;
+  proxyUser.disabled = false;
+  proxyPass.disabled = false;
+
+  (document.getElementById('vkGroupId') as HTMLInputElement).value = view.bot.groupId;
+  (document.getElementById('vkUserId') as HTMLInputElement).value = view.bot.userId;
+  (document.getElementById('upstreamSocks') as HTMLInputElement).value = view.proxy.socks;
+  document.getElementById('protectedSettingsStatus')!.textContent = protectionSummary(view);
   document.getElementById('clearCookiesStatus')!.textContent = '';
+  (document.getElementById('btnSettingsSave') as HTMLButtonElement).disabled =
+    !view.protection.available;
+  document.getElementById('settingsPopup')!.classList.add('visible');
+}
+
+function clearTransientSecretInputs(): void {
+  const tokenInput = document.getElementById('vkToken') as HTMLInputElement;
+  const proxyUser = document.getElementById('upstreamUser') as HTMLInputElement;
+  const proxyPass = document.getElementById('upstreamPass') as HTMLInputElement;
+  const clearToken = document.getElementById('clearVkToken') as HTMLInputElement;
+  const clearProxy = document.getElementById('clearUpstreamCredentials') as HTMLInputElement;
+  tokenInput.value = '';
+  proxyUser.value = '';
+  proxyPass.value = '';
+  clearToken.checked = false;
+  clearProxy.checked = false;
+  tokenInput.disabled = false;
+  proxyUser.disabled = false;
+  proxyPass.disabled = false;
 }
 
 function closeSettings(): void {
+  clearTransientSecretInputs();
   document.getElementById('settingsPopup')!.classList.remove('visible');
 }
 
-function init(): void {
+async function init(): Promise<void> {
   bindTabBarEvents();
   bindToolbarEvents();
   bindActionBarEvents();
@@ -198,7 +293,7 @@ function init(): void {
   bindLogEvents();
   bindHeadlessEvents();
 
-  window.bridge.setUpstreamProxy(tm.upstreamProxy);
+  await tm.initializeProtectedSettings();
 
   window.bridge.onRelayLog((tabId: string, msg: string) => {
     tm.appendRelayLog(tabId, msg);
@@ -256,8 +351,10 @@ function init(): void {
   });
 
   startHookLogPoller(tm);
-  tm.autoStartBot();
+  await tm.autoStartBot();
   renderBotButton(tm);
 }
 
-init();
+void init().catch((error) => {
+  showError(error instanceof Error ? error.message : 'Creator initialization failed.');
+});

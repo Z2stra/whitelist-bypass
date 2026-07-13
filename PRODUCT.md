@@ -9,7 +9,7 @@
 - Android client: existing `android-app` using `VpnService` and the headless Go/Pion path.
 - The unmodified Windows Creator and Android debug APK have been built and smoke-tested locally on Windows.
 - Android baseline CI now passes `test`, `lintDebug`, and `assembleDebug`; 69 non-blocking lint warnings remain classified as technical debt.
-- Creator CI now passes TypeScript build, static type-check, unit/regression tests and an Electron renderer-isolation smoke test on Node.js 22.
+- Creator CI now covers TypeScript build, static type-check, unit/regression tests, Electron renderer isolation and a Windows DPAPI protected-settings smoke on Node.js 22.
 - No production credentials, tokens, cookies, proxy passwords or signing keys belong in Git or public CI.
 
 ## Mandatory architecture gate
@@ -50,7 +50,7 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [x] Restrict the POC handler to `WLB-POC/1` PING/PONG; operational join/start/close commands remain disabled in POC mode.
 - [x] Validate Electron IPC senders and runtime arguments.
 - [x] Remove Node privileges from remote web content and restrict navigation, redirects, popups and permissions to explicit platform origins.
-- [ ] Move long-lived secrets out of renderer `localStorage`; document remaining cookie-storage risk.
+- [x] Move long-lived secrets out of renderer `localStorage`; document remaining cookie-storage risk.
 
 ### Phase 1 — official VK API PING/PONG POC
 
@@ -66,7 +66,7 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 ### Phase 2 — production security foundation
 
 - [x] Complete the Electron IPC and remote-content trust-boundary hardening milestone.
-- [ ] Introduce OS-protected secret storage without exposing secrets to the renderer.
+- [x] Introduce OS-protected secret storage without exposing stored secrets to the renderer.
 - [ ] Define replay windows, counters, expiry, rate limits and audit-safe event logging.
 - [ ] Complete Android backup exclusions and token/log review.
 
@@ -118,4 +118,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: Phase 0 documentation is established. Android baseline checks are green. VK transport hardening, typed headless process events, IPC sender/argument validation and remote-webview isolation are implemented and covered by Creator CI. The Creator POC-only `WLB-POC/1` PING/PONG handler is implemented and isolated from operational commands. The pre-POC security gate remains open because protected main-process secret storage and cookie persistence/export review are not complete. Official VK API POC has not started. Real credentials must not be entered yet.**
+**Current status: Phase 0 documentation is established. Android baseline checks are green. VK transport hardening, typed headless process events, IPC sender/argument validation, remote-webview isolation, the POC-only `WLB-POC/1` handler and main-process OS-protected settings are implemented. Raw cookie export is removed and headless cookie files are ephemeral; remaining same-user/process-argument risks are documented. The official VK API POC has not started. Real credentials may be introduced only in a post-merge Windows build after the DPAPI smoke and local upgrade migration are confirmed.**

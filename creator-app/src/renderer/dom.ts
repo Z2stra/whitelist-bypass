@@ -294,17 +294,6 @@ export function saveLogs(): void {
   URL.revokeObjectURL(anchor.href);
 }
 
-export function exportCookiesZip(): void {
-  window.bridge.exportCookiesZip().then((bytes) => {
-    const blob = new Blob([new Uint8Array(bytes)], { type: 'application/zip' });
-    const anchor = document.createElement('a');
-    anchor.href = URL.createObjectURL(blob);
-    anchor.download = 'cookies.zip';
-    anchor.click();
-    URL.revokeObjectURL(anchor.href);
-  });
-}
-
 export function copyToClipboard(text: string): void {
   navigator.clipboard.writeText(text);
 }

@@ -50,13 +50,26 @@ All notable project changes made as part of the staged control-plane work are re
 - Added trust-policy/static regression tests and an Electron/Xvfb smoke test that proves the UI boots without `require` or a privileged bridge in the page main world.
 - Configured the GitHub Actions Electron sandbox helper with root ownership and mode `4755`; sandboxing is not disabled in CI.
 
+### Creator protected settings and cookies
+
+- Moved the VK community token and upstream proxy credentials from renderer `localStorage` into a versioned main-process protected-settings store.
+- Encrypted the settings envelope through Electron `safeStorage`; Windows uses DPAPI and insecure Linux `basic_text` fallback is refused.
+- Replaced secret-bearing renderer state with configured/not-configured projections and explicit keep/replace/clear operations.
+- Added one-time, idempotent migration that deletes legacy plaintext only after confirmed protected persistence.
+- Made bot startup a zero-argument IPC call and applied upstream proxy settings only from main-process storage.
+- Serialized concurrent protected writes, quarantined corrupt stores and added a real Windows DPAPI write/reload/no-plaintext smoke test.
+- Removed raw cookie ZIP export and the privileged cookie-export IPC path.
+- Replaced persistent headless `cookies-*.json` files with random process-scoped temporary files plus exit/crash cleanup.
+- Tightened cookie-domain matching to exact roots/proper subdomains and removed WB device IDs/cookie details from normal logs.
+- Documented persistent Chromium-cookie, same-user DPAPI and child-process command-line residual risks.
+
 ### Security status
 
 - VK transport hardening, typed headless process events, the isolated `WLB-POC/1` handler and the Electron IPC/remote-content trust boundary are implemented and tested.
-- Real VK credentials, platform cookies and proxy passwords remain prohibited until protected main-process secret storage and cookie persistence/export review are complete.
+- Stored VK/proxy secrets are now main-process owned and OS-protected; controlled POC credentials remain gated on merge, Windows DPAPI smoke and local upgrade verification.
 
 ### Known baseline debt
 
 - Android has no blocking lint errors; 69 non-blocking warnings remain classified as technical debt.
-- Long-lived VK/proxy credentials still reside in renderer storage and platform cookie persistence/export remains open security work.
+- Platform sessions remain in the persistent Chromium profile, and proxy credentials are still visible transiently in child-process command-line arguments to legacy Go binaries.
 - Creator dependency audit findings remain a separate dependency-upgrade task; no automatic `npm audit fix` was applied.

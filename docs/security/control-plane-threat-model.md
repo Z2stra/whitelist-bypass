@@ -66,6 +66,8 @@ The data-plane tunnel and the proposed control plane are separate security domai
 
 **Required controls:** main-process ownership of secrets; OS-protected storage; renderer receives only status/non-secret projections; explicit migration and deletion of legacy values.
 
+**Implemented status:** stored VK/proxy secrets are main-process owned, encrypted through OS-backed `safeStorage`, projected as configured flags only, and legacy plaintext is removed after confirmed migration. Same-user malware and transient child-process argument visibility remain residual risks.
+
 ### Functional data destroyed by redaction
 
 **Risk:** a join link is redacted before the functional parser consumes it, breaking the application; alternatively, raw links leak because functional data and diagnostics share one channel.

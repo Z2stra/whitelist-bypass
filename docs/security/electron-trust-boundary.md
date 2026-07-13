@@ -2,7 +2,7 @@
 
 - Status: Implemented for the IPC and remote-content portion of the pre-POC gate
 - Scope: Creator application page, IPC entry points, remote webviews, navigation, redirects, popups, permissions and legacy CSP exceptions
-- Remaining adjacent risk: long-lived credentials still live in renderer storage and must move to protected main-process storage before real credentials are used
+- Adjacent credential milestone: implemented in `protected-settings-and-cookies.md`; residual same-user and legacy child-process risks remain
 
 ## Problem
 
@@ -85,10 +85,6 @@ Automated checks cover:
 
 The CI smoke test keeps Chromium sandboxing enabled. On the Ubuntu runner, the Electron `chrome-sandbox` helper is configured with root ownership and mode `4755`; the test does not use `--no-sandbox`.
 
-## Remaining work
+## Adjacent completed work and residual risk
 
-This boundary does not make real credentials acceptable yet. The following pre-POC items remain:
-
-1. Introduce the isolated `WLB-POC/1` PING/PONG handler and ensure operational commands are disabled in POC mode.
-2. Move VK token and proxy credentials out of renderer `localStorage` into main-process OS-protected storage.
-3. Review platform cookie persistence and export UX before production use.
+The isolated `WLB-POC/1` handler and main-process protected-settings/cookie-export milestone are now implemented. See `protected-settings-and-cookies.md` for migration behavior, Windows DPAPI verification and the remaining same-user, persistent Chromium-profile and child-process command-line risks.

@@ -1,8 +1,8 @@
 import {
   RendererTab,
   BotTabData,
-  BotSettings,
-  UpstreamProxy,
+  ProtectedSettingsUpdate,
+  ProtectedSettingsView,
   TunnelMode,
   Platform,
   Bridge,
@@ -11,6 +11,10 @@ import {
   HeadlessProcessEvent,
 } from '../types';
 import { applyHeadlessProcessEvent } from './headless-event-state';
+import {
+  collectLegacyPlaintextSettings,
+  removeLegacyPlaintextSettings,
+} from './protected-settings-migration';
 
 declare const window: Window & { bridge: Bridge };
 
@@ -19,20 +23,62 @@ export class RendererTabManager {
   activeTabId: string | null = null;
   private nextId = 1;
   botRunning = false;
-  botSettings: BotSettings;
-  upstreamProxy: UpstreamProxy;
+  settingsView: ProtectedSettingsView = {
+    protection: {
+      available: false,
+      backend: 'unknown',
+      warning: 'Protected settings have not been loaded.',
+    },
+    bot: { groupId: '', userId: '', tokenConfigured: false },
+    proxy: { socks: '', usernameConfigured: false, passwordConfigured: false },
+  };
   private onRender: () => void;
 
   constructor(onRender: () => void) {
     this.onRender = onRender;
-    const saved = localStorage.getItem('botSettings');
-    this.botSettings = saved
-      ? JSON.parse(saved)
-      : { token: '', groupId: '', userId: '' };
-    const savedProxy = localStorage.getItem('upstreamProxy');
-    this.upstreamProxy = savedProxy
-      ? JSON.parse(savedProxy)
-      : { socks: '', user: '', pass: '' };
+  }
+
+  async initializeProtectedSettings(): Promise<void> {
+    const legacy = collectLegacyPlaintextSettings(localStorage);
+    if (legacy.hadLegacy) {
+      let migrated = false;
+      try {
+        this.settingsView = await window.bridge.migrateLegacySettings(legacy);
+        migrated = true;
+      } catch {
+        this.settingsView = await window.bridge.getProtectedSettings();
+      }
+      if (migrated && !removeLegacyPlaintextSettings(localStorage)) {
+        throw new Error('Protected migration succeeded, but legacy plaintext could not be removed.');
+      }
+    } else {
+      this.settingsView = await window.bridge.getProtectedSettings();
+    }
+    this.onRender();
+  }
+
+  async refreshProtectedSettings(): Promise<void> {
+    this.settingsView = await window.bridge.getProtectedSettings();
+    this.onRender();
+  }
+
+  async saveProtectedSettings(update: ProtectedSettingsUpdate): Promise<void> {
+    this.settingsView = await window.bridge.saveProtectedSettings(update);
+    if (!removeLegacyPlaintextSettings(localStorage)) {
+      throw new Error('Protected settings were saved, but legacy plaintext could not be removed.');
+    }
+    this.botRunning = false;
+    localStorage.setItem('botEnabled', 'false');
+    this.onRender();
+  }
+
+  hasBotConfiguration(): boolean {
+    return (
+      this.settingsView.protection.available &&
+      this.settingsView.bot.tokenConfigured &&
+      this.settingsView.bot.groupId.length > 0 &&
+      this.settingsView.bot.userId.length > 0
+    );
   }
 
   createTab(): string {
@@ -215,35 +261,39 @@ export class RendererTabManager {
     });
   }
 
-  saveBotSettings(): void {
-    localStorage.setItem('botSettings', JSON.stringify(this.botSettings));
-  }
-
-  saveUpstreamProxy(): void {
-    localStorage.setItem('upstreamProxy', JSON.stringify(this.upstreamProxy));
-    window.bridge.setUpstreamProxy(this.upstreamProxy);
-  }
-
-  toggleBot(): void {
-    if (!this.botSettings.token || !this.botSettings.groupId) return;
-    this.botRunning = !this.botRunning;
-    localStorage.setItem('botEnabled', this.botRunning ? 'true' : 'false');
+  async toggleBot(): Promise<void> {
     if (this.botRunning) {
-      window.bridge.startBot(this.botSettings);
-    } else {
-      window.bridge.stopBot();
+      await window.bridge.stopBot();
+      this.botRunning = false;
+      localStorage.setItem('botEnabled', 'false');
+      this.onRender();
+      return;
     }
+
+    if (!this.hasBotConfiguration()) {
+      throw new Error('Configure a protected VK token, group ID and allowed user ID first.');
+    }
+    const result = await window.bridge.startBot();
+    if (!result.success) {
+      throw new Error(result.error || 'VK bot failed to start.');
+    }
+    this.botRunning = true;
+    localStorage.setItem('botEnabled', 'true');
     this.onRender();
   }
 
-  autoStartBot(): void {
-    if (
-      localStorage.getItem('botEnabled') === 'true' &&
-      this.botSettings.token &&
-      this.botSettings.groupId
-    ) {
-      this.botRunning = true;
-      window.bridge.startBot(this.botSettings);
+  async autoStartBot(): Promise<void> {
+    if (localStorage.getItem('botEnabled') !== 'true') return;
+    if (!this.hasBotConfiguration()) {
+      localStorage.setItem('botEnabled', 'false');
+      return;
     }
+    const result = await window.bridge.startBot();
+    if (!result.success) {
+      localStorage.setItem('botEnabled', 'false');
+      return;
+    }
+    this.botRunning = true;
+    this.onRender();
   }
 }

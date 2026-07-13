@@ -12,12 +12,10 @@ import {
   HeadlessStartArgs,
   Platform,
   TunnelMode,
-  UpstreamProxy,
 } from '../types';
 import {
   TrustPolicyError,
   assertArgumentCount,
-  assertBotSettingsShape,
   assertHeadlessStartArgs,
   assertOptionalPlatform,
   assertPlatform,
@@ -26,9 +24,12 @@ import {
   assertSensitiveResult,
   assertTabId,
   assertTunnelMode,
-  assertUpstreamProxy,
   isTrustedIpcSenderSnapshot,
 } from './trust-policy';
+import {
+  ProtectedSettingsError,
+  ProtectedSettingsStore,
+} from './protected-settings';
 
 const APP_INDEX_PATH = path.join(__dirname, '..', '..', 'index.html');
 const APP_INDEX_URL = pathToFileURL(APP_INDEX_PATH).toString();
@@ -75,6 +76,7 @@ function assertNoArguments(args: unknown[]): void {
 
 export function registerIpcHandlers(
   tabManager: TabManager,
+  protectedSettings: ProtectedSettingsStore,
   botCommandMode: BotCommandMode = BotCommandMode.Operational,
 ): void {
   registerTrustedHandler(IPC.GET_HOOK_CODE, tabManager, async (_event, ...args) => {
@@ -123,13 +125,39 @@ export function registerIpcHandlers(
     tabManager.deleteTab(assertTabId(args[0]));
   });
 
-  registerTrustedHandler(IPC.START_BOT, tabManager, async (_event, ...args) => {
+  registerTrustedHandler(IPC.GET_PROTECTED_SETTINGS, tabManager, (_event, ...args) => {
+    assertNoArguments(args);
+    return protectedSettings.getView();
+  });
+
+  registerTrustedHandler(IPC.MIGRATE_LEGACY_SETTINGS, tabManager, async (_event, ...args) => {
     assertArgumentCount(args.length, [1]);
+    const view = await protectedSettings.migrateLegacy(args[0]);
+    tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
+    return view;
+  });
+
+  registerTrustedHandler(IPC.SAVE_PROTECTED_SETTINGS, tabManager, async (_event, ...args) => {
+    assertArgumentCount(args.length, [1]);
+    const view = await protectedSettings.applyUpdate(args[0]);
+    tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
+    if (tabManager.botManager) {
+      tabManager.botManager.stop();
+      tabManager.botManager = null;
+    }
+    return view;
+  });
+
+  registerTrustedHandler(IPC.START_BOT, tabManager, async (_event, ...args) => {
+    assertNoArguments(args);
     let settings: BotSettings;
     try {
-      settings = assertBotSettingsShape(args[0]);
+      settings = protectedSettings.getBotSettings();
     } catch (error) {
-      return { success: false, error: safeErrorMessage(error, 'VK bot configuration') };
+      const message = error instanceof ProtectedSettingsError
+        ? error.message
+        : safeErrorMessage(error, 'Protected VK bot settings');
+      return { success: false, error: message };
     }
 
     if (tabManager.botManager) {
@@ -198,12 +226,6 @@ export function registerIpcHandlers(
     return { success: true };
   });
 
-  registerTrustedHandler(IPC.SET_UPSTREAM_PROXY, tabManager, (_event, ...args) => {
-    assertArgumentCount(args.length, [1]);
-    const proxy: UpstreamProxy = assertUpstreamProxy(args[0]);
-    tabManager.setUpstreamProxy(proxy);
-  });
-
   registerTrustedHandler(IPC.CLEAR_COOKIES, tabManager, (_event, ...args) => {
     assertArgumentCount(args.length, [1]);
     return tabManager.clearPlatformCookies(assertPlatform(args[0]));
@@ -216,8 +238,4 @@ export function registerIpcHandlers(
     return tabManager.sendBotCallLink(tabId, result);
   });
 
-  registerTrustedHandler(IPC.EXPORT_COOKIES_ZIP, tabManager, (_event, ...args) => {
-    assertNoArguments(args);
-    return tabManager.buildCookiesZip();
-  });
 }

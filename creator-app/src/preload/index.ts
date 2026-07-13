@@ -1,12 +1,12 @@
 import { ipcRenderer } from 'electron';
 import { IPC } from '../constants';
 import type {
-  BotSettings,
   BotTabData,
   Bridge,
   HeadlessProcessEvent,
   HeadlessStartArgs,
-  UpstreamProxy,
+  LegacyPlaintextSettings,
+  ProtectedSettingsUpdate,
 } from '../types';
 
 const bridge: Bridge = {
@@ -28,14 +28,20 @@ const bridge: Bridge = {
   closeTab(tabId: string) {
     return ipcRenderer.invoke(IPC.CLOSE_TAB, tabId);
   },
-  startBot(settings: BotSettings) {
-    return ipcRenderer.invoke(IPC.START_BOT, settings);
+  getProtectedSettings() {
+    return ipcRenderer.invoke(IPC.GET_PROTECTED_SETTINGS);
+  },
+  saveProtectedSettings(update: ProtectedSettingsUpdate) {
+    return ipcRenderer.invoke(IPC.SAVE_PROTECTED_SETTINGS, update);
+  },
+  migrateLegacySettings(settings: LegacyPlaintextSettings) {
+    return ipcRenderer.invoke(IPC.MIGRATE_LEGACY_SETTINGS, settings);
+  },
+  startBot() {
+    return ipcRenderer.invoke(IPC.START_BOT);
   },
   stopBot() {
     return ipcRenderer.invoke(IPC.STOP_BOT);
-  },
-  setUpstreamProxy(proxy: UpstreamProxy) {
-    return ipcRenderer.invoke(IPC.SET_UPSTREAM_PROXY, proxy);
   },
   clearCookies(platform: string) {
     return ipcRenderer.invoke(IPC.CLEAR_COOKIES, platform);
@@ -48,9 +54,6 @@ const bridge: Bridge = {
   },
   onBotError(cb: (msg: string) => void) {
     ipcRenderer.on(IPC.BOT_ERROR, (_e, msg) => cb(msg));
-  },
-  exportCookiesZip() {
-    return ipcRenderer.invoke(IPC.EXPORT_COOKIES_ZIP);
   },
   startHeadless(tabId: string, platform: string, args: HeadlessStartArgs) {
     return ipcRenderer.invoke(IPC.START_HEADLESS, tabId, platform, args);

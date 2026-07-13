@@ -38,9 +38,13 @@ import {
 } from '../constants';
 import { BotManager } from '../bot/bot-manager';
 import { redactSensitiveText } from '../bot/security';
-import { buildStoredZip } from './util/zip';
 import { resolveResourcePath, binaryName } from './util/paths';
 import { classifyHeadlessProcessLine, ProcessLineBuffer } from './headless-process-events';
+import {
+  createEphemeralCookieFile,
+  EphemeralCookieFile,
+} from './ephemeral-cookie-file';
+import { cookieDomainMatchesRoots } from './cookie-domain-policy';
 
 interface ProcessOutputOptions {
   headless?: boolean;
@@ -61,6 +65,7 @@ export class TabManager {
   private headlessDionPath: string;
   private hooksDir: string;
   private upstreamProxy: UpstreamProxy = { socks: '', user: '', pass: '' };
+  private cookieLeases = new Map<ChildProcess, EphemeralCookieFile>();
 
   constructor() {
     this.relayPath = resolveResourcePath(
@@ -251,7 +256,7 @@ export class TabManager {
     this.upstreamProxy = {
       socks: (proxy?.socks || '').trim(),
       user: (proxy?.user || '').trim(),
-      pass: (proxy?.pass || '').trim(),
+      pass: proxy?.pass || '',
     };
   }
 
@@ -380,10 +385,16 @@ export class TabManager {
       }
       if (platform === Platform.WBStream) {
         this.sendLog(tabId, 'Waiting for x_wbaas_token, wbx-refresh, wbx-validation-key...');
-        await this.waitForCookies(['x_wbaas_token', 'wbx-refresh', 'wbx-validation-key']);
+        await this.waitForCookies(
+          ['x_wbaas_token', 'wbx-refresh', 'wbx-validation-key'],
+          config.cookieDomains,
+        );
       } else if (platform === Platform.Dion) {
         this.sendLog(tabId, 'Waiting for vc-refresh-token, vc-access-token...');
-        await this.waitForCookies(['vc-refresh-token', 'vc-access-token']);
+        await this.waitForCookies(
+          ['vc-refresh-token', 'vc-access-token'],
+          config.cookieDomains,
+        );
       } else {
         await this.waitForLogin(config.cookieDomains, config.authCookie);
       }
@@ -393,19 +404,25 @@ export class TabManager {
       this.sendLog(tabId, `${config.platformName} login captured.`);
       cookies = await this.getCookiesForDomains(config.cookieDomains);
     }
-    this.sendLog(tabId, `${config.platformName} cookies (${cookies.length}): ${cookies.map((c) => c.name).join(', ')}`);
-    const cookiesPath = path.join(app.getPath('userData'), `cookies-${platform}.json`);
-    await fs.writeFile(cookiesPath, JSON.stringify(cookies));
-    const spawnArgs = ['--resources', 'default', '--cookies', cookiesPath];
+    this.sendLog(tabId, `${config.platformName} session cookies prepared (${cookies.length}).`);
     this.killRelay(tabId, tab);
+    const cookieLease = await createEphemeralCookieFile(cookies);
+    const spawnArgs = ['--resources', 'default', '--cookies', cookieLease.filePath];
     if (joinTarget) {
       const flag = this.joinFlagFor(platform);
       if (flag) spawnArgs.push(flag, joinTarget);
     }
     this.appendUpstreamArgs(spawnArgs);
-    const proc = spawn(config.binaryPath, spawnArgs, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    let proc: ChildProcess;
+    try {
+      proc = spawn(config.binaryPath, spawnArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      await cookieLease.cleanup();
+      throw error;
+    }
+    this.trackCookieLease(proc, cookieLease);
     tab.relay = proc;
     let sawAuthFailure = false;
     this.attachProcessOutput(proc, tabId, {
@@ -434,13 +451,13 @@ export class TabManager {
     const ses = session.fromPartition(SESSION_PARTITION);
     const matches = await ses.cookies.get({ name: authCookieName });
     for (const cookie of matches) {
-      if (!cookie.domain || !cookieDomains.some((d) => cookie.domain!.includes(d))) continue;
+      if (!cookie.domain || !cookieDomainMatchesRoots(cookie.domain, cookieDomains)) continue;
       const host = cookie.domain.startsWith('.') ? cookie.domain.slice(1) : cookie.domain;
       const url = `https://${host}${cookie.path || '/'}`;
       try {
         await ses.cookies.remove(url, cookie.name);
-      } catch (err) {
-        console.log(`[COOKIES] failed to remove ${cookie.name} on ${url}:`, err);
+      } catch {
+        console.log('[COOKIES] failed to remove an authentication cookie');
       }
     }
   }
@@ -452,17 +469,16 @@ export class TabManager {
     const all = await ses.cookies.get({});
     let removed = 0;
     for (const cookie of all) {
-      if (!cookie.domain || !config.cookieDomains.some((d) => cookie.domain!.includes(d))) continue;
+      if (!cookie.domain || !cookieDomainMatchesRoots(cookie.domain, config.cookieDomains)) continue;
       const host = cookie.domain.startsWith('.') ? cookie.domain.slice(1) : cookie.domain;
       const url = `https://${host}${cookie.path || '/'}`;
       try {
         await ses.cookies.remove(url, cookie.name);
         removed++;
-      } catch (err) {
-        console.log(`[COOKIES] failed to remove ${cookie.name} on ${url}:`, err);
+      } catch {
+        console.log('[COOKIES] failed to remove a platform cookie');
       }
     }
-    await fs.unlink(path.join(app.getPath('userData'), `cookies-${platform}.json`)).catch(() => {});
     console.log(`[COOKIES] cleared ${removed} cookies for ${platform}`);
     return removed;
   }
@@ -482,28 +498,45 @@ export class TabManager {
       ) => {
         if (removed) return;
         if (cookie.name !== authCookieName) return;
-        if (!cookie.domain || !cookieDomains.some((d) => cookie.domain!.includes(d))) return;
+        if (!cookie.domain || !cookieDomainMatchesRoots(cookie.domain, cookieDomains)) return;
         finish();
       };
       ses.cookies.on('changed', onChanged);
       ses.cookies.get({ name: authCookieName }).then((found) => {
-        if (found.some((c) => c.domain && cookieDomains.some((d) => c.domain!.includes(d)))) {
+        if (found.some((c) => c.domain && cookieDomainMatchesRoots(c.domain, cookieDomains))) {
           finish();
         }
       });
     });
   }
 
+  private trackCookieLease(proc: ChildProcess, lease: EphemeralCookieFile): void {
+    this.cookieLeases.set(proc, lease);
+    const cleanup = (): void => this.cleanupCookieLease(proc);
+    proc.once('error', cleanup);
+    proc.once('close', cleanup);
+  }
+
+  private cleanupCookieLease(proc: ChildProcess): void {
+    const lease = this.cookieLeases.get(proc);
+    if (!lease) return;
+    this.cookieLeases.delete(proc);
+    lease.cleanupSync();
+  }
+
   killRelay(tabId: string, tab: TabState): void {
     if (tab.relay) {
-      console.log(`[${tabId}] killing process pid=${tab.relay.pid}`);
-      tab.relay.kill();
+      const proc = tab.relay;
+      console.log(`[${tabId}] killing process pid=${proc.pid}`);
+      proc.kill();
+      this.cleanupCookieLease(proc);
       tab.relay = null;
     }
   }
 
   killAllRelays(): void {
     this.tabs.forEach((tab, tabId) => this.killRelay(tabId, tab));
+    for (const proc of Array.from(this.cookieLeases.keys())) this.cleanupCookieLease(proc);
   }
 
   async loadHook(tabId: string, url: string, tab: TabState): Promise<string> {
@@ -543,11 +576,11 @@ export class TabManager {
     const ses = session.fromPartition(SESSION_PARTITION);
     const all = await ses.cookies.get({});
     return all
-      .filter((c) => c.domain != null && domains.some((d) => c.domain!.includes(d)))
+      .filter((c) => c.domain != null && cookieDomainMatchesRoots(c.domain, domains))
       .map((c) => ({ name: c.name, value: c.value }));
   }
 
-  private waitForCookies(names: string[]): Promise<void> {
+  private waitForCookies(names: string[], cookieDomains: string[]): Promise<void> {
     return new Promise((resolve) => {
       const ses = session.fromPartition(SESSION_PARTITION);
       const remaining = new Set(names);
@@ -563,33 +596,26 @@ export class TabManager {
       ) => {
         if (removed) return;
         if (!remaining.has(cookie.name)) return;
+        if (!cookie.domain || !cookieDomainMatchesRoots(cookie.domain, cookieDomains)) return;
         remaining.delete(cookie.name);
         if (remaining.size === 0) finish();
       };
       ses.cookies.on('changed', onChanged);
       Promise.all(names.map((name) => ses.cookies.get({ name }))).then((results) => {
         results.forEach((found, i) => {
-          if (found.length > 0) remaining.delete(names[i]);
+          if (
+            found.some((cookie) =>
+              cookie.domain != null && cookieDomainMatchesRoots(cookie.domain, cookieDomains),
+            )
+          ) {
+            remaining.delete(names[i]);
+          }
         });
         if (remaining.size === 0) finish();
       });
     });
   }
 
-  async buildCookiesZip(): Promise<Buffer> {
-    const platforms: { filename: string; domains: string[] }[] = [
-      { filename: 'cookies-vk.json', domains: VK_COOKIE_DOMAINS },
-      { filename: 'cookies-yandex.json', domains: YANDEX_COOKIE_DOMAINS },
-      { filename: 'cookies-dion.json', domains: DION_COOKIE_DOMAINS },
-      { filename: 'cookies-wbstream.json', domains: WBSTREAM_COOKIE_DOMAINS },
-    ];
-    const cookies = await Promise.all(platforms.map((p) => this.getCookiesForDomains(p.domains)));
-    const entries = platforms.map((p, i) => ({
-      name: p.filename,
-      data: Buffer.from(JSON.stringify(cookies[i], null, 2), 'utf8'),
-    }));
-    return buildStoredZip(entries);
-  }
 
   async setWBStreamDeviceId(id: string): Promise<void> {
     if (!id) return;
@@ -607,9 +633,9 @@ export class TabManager {
         httpOnly: false,
         expirationDate: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365 * 5,
       });
-      console.log(`[wb-device-id] persisted ${id}`);
-    } catch (err) {
-      console.log(`[wb-device-id] failed to persist:`, err);
+      console.log('[wb-device-id] persisted');
+    } catch {
+      console.log('[wb-device-id] failed to persist');
     }
   }
 
