@@ -67,7 +67,21 @@ test('legacy CSP relaxation is limited to VK and Telemost documents', () => {
   assert.equal(isLegacyHookUrl('https://stream.wb.ru/'), false);
 });
 
-test('permission policy defaults to deny and only admits media/fullscreen on active call originstmp/evil.js',
+test('permission policy defaults to deny and only admits media/fullscreen on active call origins', () => {
+  assert.equal(isAllowedPermission('media', 'https://vk.com/call'), true);
+  assert.equal(isAllowedPermission('fullscreen', 'https://telemost.yandex.ru/j/x'), true);
+  assert.equal(isAllowedPermission('media', 'https://dion.vc/event/x'), true);
+  assert.equal(isAllowedPermission('media', 'https://stream.wb.ru/room/x'), true);
+  assert.equal(isAllowedPermission('media', 'https://passport.yandex.ru/auth'), false);
+  assert.equal(isAllowedPermission('media', 'https://mail.yandex.ru/'), false);
+  assert.equal(isAllowedPermission('notifications', 'https://vk.com/call'), false);
+  assert.equal(isAllowedPermission('media', 'https://evil.example/'), false);
+  assert.equal(isAllowedPermission('media', 'http://vk.com/call'), false);
+});
+
+test('guest preferences forcibly remove Node privileges and preload paths', () => {
+  const preferences = {
+    preload: '/tmp/evil.js',
     nodeIntegration: true,
     nodeIntegrationInSubFrames: true,
     nodeIntegrationInWorker: true,
