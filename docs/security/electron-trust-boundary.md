@@ -1,14 +1,14 @@
 # Electron trust boundary
 
-- Status: Implemented for the pre-POC gate
-- Scope: Creator root renderer, IPC entry points, remote webviews, navigation, popups, permissions and legacy CSP exceptions
+- Status: Implemented for the IPC and remote-content portion of the pre-POC gate
+- Scope: Creator application page, IPC entry points, remote webviews, navigation, redirects, popups, permissions and legacy CSP exceptions
 - Remaining adjacent risk: long-lived credentials still live in renderer storage and must move to protected main-process storage before real credentials are used
 
 ## Problem
 
 The original Electron Creator trusted remote content and renderer input too broadly:
 
-- the root page ran with Node integration and without context isolation;
+- the application page ran with Node integration and without context isolation;
 - remote webviews could request Node integration;
 - permissions were allowed globally;
 - any HTTP/HTTPS navigation or popup was accepted;
@@ -33,6 +33,8 @@ allowRunningInsecureContent=false
 
 The page main world does not receive `require`, Node globals or the privileged bridge. Trusted UI code is loaded from the local preload isolated world. The root page has a restrictive CSP and may navigate only to the exact Creator `index.html` file.
 
+The root BrowserWindow currently retains `sandbox=false` because the trusted local UI executes from the isolated preload world. This is a deliberate compatibility boundary, not a claim that the application page renderer is fully sandboxed. Untrusted remote webviews and accepted popup windows are sandboxed separately and do not receive this preload.
+
 ### IPC
 
 Every invoke handler is registered through a trusted wrapper. A call is accepted only when:
@@ -43,7 +45,7 @@ Every invoke handler is registered through a trusted wrapper. A call is accepted
 - the argument count matches the channel contract;
 - all enum, URL, identifier, object and sensitive-string arguments pass runtime validation.
 
-Call-script loading uses a fixed filename allowlist and a canonical directory containment check.
+Remote URLs are HTTPS-only, reject embedded credentials and non-default ports, and must match the explicit platform host allowlist. Control characters and oversized values are rejected. Call-script loading uses a fixed filename allowlist and a canonical directory containment check.
 
 ### Remote webviews
 
@@ -61,7 +63,7 @@ allowRunningInsecureContent=false
 
 Guest preload paths are removed. The guest must use the dedicated Creator partition and an HTTPS URL belonging to an explicit platform host allowlist.
 
-Navigation and redirects are denied outside the allowlist. Popups are denied unless their destination is allowlisted; accepted popup windows receive the same sandboxed preferences. Device and display-capture permissions are denied. Only media and fullscreen requests from allowlisted origins are accepted.
+Navigation and redirects are denied outside the allowlist. Popups are denied unless their destination is allowlisted; accepted popup windows receive the same sandboxed preferences. Device and display-capture permissions are denied. Media and fullscreen are default-deny and are allowed only on active call origins: VK, Telemost, DION and `stream.wb.ru`; account/login pages such as `passport.yandex.ru` do not receive them.
 
 ### Legacy CSP exception
 
@@ -72,14 +74,16 @@ CSP removal is no longer global. It is limited to document frames on the legacy 
 Automated checks cover:
 
 - platform URL and lookalike rejection;
-- HTTPS-only navigation;
-- permission default-deny behavior;
+- HTTPS-only navigation and rejection of non-default ports;
+- permission default-deny behavior and denial on auth-only origins;
 - forced guest preferences and preload removal;
 - exact local-file IPC sender matching, including Windows path normalization;
 - script traversal rejection;
-- runtime argument validation;
+- runtime argument and control-character validation;
 - static absence of Node integration and global allow-all handlers;
 - an Electron/Xvfb smoke test proving that the Creator UI boots while `require` and `window.bridge` are unavailable in the page main world.
+
+The CI smoke test keeps Chromium sandboxing enabled. On the Ubuntu runner, the Electron `chrome-sandbox` helper is configured with root ownership and mode `4755`; the test does not use `--no-sandbox`.
 
 ## Remaining work
 
