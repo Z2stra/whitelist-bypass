@@ -1,0 +1,154 @@
++    getProtectedSettings: async () => unconfirmed,
++  });
++  try {
++    const manager = new RendererTabManager(() => {});
++    await manager.initializeProtectedSettings();
++    assert.notEqual(storage.getItem(LEGACY_BOT_SETTINGS_KEY), null);
++  } finally {
++    restore();
++  }
++});
++
++test('a later keep-only save cannot delete a legacy token that was never protected', async () => {
++  const storage = new MemoryStorage();
++  storage.setItem(
++    LEGACY_BOT_SETTINGS_KEY,
++    JSON.stringify({ token: 'legacy-token', groupId: '42', userId: '1' }),
++  );
++  const unconfirmed = {
++    ...VIEW,
++    bot: { ...VIEW.bot, tokenConfigured: false },
++  };
++  const restore = installGlobals(storage, {
++    saveProtectedSettings: async () => unconfirmed,
++  });
++  try {
++    const manager = new RendererTabManager(() => {});
++    await assert.rejects(
++      manager.saveProtectedSettings({
++        bot: { groupId: '42', userId: '1', token: { action: 'keep' } },
++        proxy: { socks: '', username: { action: 'keep' }, password: { action: 'keep' } },
++      }),
++      /legacy secrets are not confirmed/,
++    );
++    assert.notEqual(storage.getItem(LEGACY_BOT_SETTINGS_KEY), null);
++    assert.equal(manager.botRunning, false);
++  } finally {
++    restore();
++  }
++});
+diff --git a/creator-app/src/renderer/protected-settings-migration.ts b/creator-app/src/renderer/protected-settings-migration.ts
+index 6525e0c..30f018d 100644
+--- a/creator-app/src/renderer/protected-settings-migration.ts
++++ b/creator-app/src/renderer/protected-settings-migration.ts
+@@ -1,4 +1,11 @@
+-import { BotSettings, LegacyPlaintextSettings, UpstreamProxy } from '../types';
++import {
++  BotSettings,
++  LegacyPlaintextSettings,
++  ProtectedSettingsUpdate,
++  ProtectedSettingsView,
++  SecretValueUpdate,
++  UpstreamProxy,
++} from '../types';
+ 
+ export const LEGACY_BOT_SETTINGS_KEY = 'botSettings';
+ export const LEGACY_UPSTREAM_PROXY_KEY = 'upstreamProxy';
+@@ -65,3 +72,50 @@ export function removeLegacyPlaintextSettings(storage: StorageLike): boolean {
+     return false;
+   }
+ }
++
++function trimmedText(value: string | undefined): boolean {
++  return typeof value === 'string' && value.trim().length > 0;
++}
++
++function opaqueText(value: string | undefined): boolean {
++  return typeof value === 'string' && value.length > 0;
++}
++
++export function legacyMigrationIsConfirmed(
++  legacy: LegacyPlaintextSettings,
++  view: ProtectedSettingsView,
++): boolean {
++  if (!legacy.hadLegacy) return true;
++  if (!view.protection.available) return false;
++  if (trimmedText(legacy.botSettings?.token) && !view.bot.tokenConfigured) return false;
++  if (trimmedText(legacy.botSettings?.groupId) && !view.bot.groupId) return false;
++  if (trimmedText(legacy.botSettings?.userId) && !view.bot.userId) return false;
++  if (trimmedText(legacy.upstreamProxy?.socks) && !view.proxy.socks) return false;
++  if (opaqueText(legacy.upstreamProxy?.user) && !view.proxy.usernameConfigured) return false;
++  if (opaqueText(legacy.upstreamProxy?.pass) && !view.proxy.passwordConfigured) return false;
++  return true;
++}
++
++function secretResolved(
++  legacyValue: string | undefined,
++  update: SecretValueUpdate,
++  configured: boolean,
++  opaque: boolean,
++): boolean {
++  const present = opaque ? opaqueText(legacyValue) : trimmedText(legacyValue);
++  return !present || update.action !== 'keep' || configured;
++}
++
++export function legacySecretsResolvedAfterSave(
++  legacy: LegacyPlaintextSettings,
++  update: ProtectedSettingsUpdate,
++  view: ProtectedSettingsView,
++): boolean {
++  if (!legacy.hadLegacy) return true;
++  if (!view.protection.available) return false;
++  return (
++    secretResolved(legacy.botSettings?.token, update.bot.token, view.bot.tokenConfigured, false) &&
++    secretResolved(legacy.upstreamProxy?.user, update.proxy.username, view.proxy.usernameConfigured, true) &&
++    secretResolved(legacy.upstreamProxy?.pass, update.proxy.password, view.proxy.passwordConfigured, true)
++  );
++}
+diff --git a/creator-app/src/renderer/tab-manager.ts b/creator-app/src/renderer/tab-manager.ts
+index dd3b0cc..18526bb 100644
+--- a/creator-app/src/renderer/tab-manager.ts
++++ b/creator-app/src/renderer/tab-manager.ts
+@@ -13,6 +13,8 @@ import {
+ import { applyHeadlessProcessEvent } from './headless-event-state';
+ import {
+   collectLegacyPlaintextSettings,
++  legacyMigrationIsConfirmed,
++  legacySecretsResolvedAfterSave,
+   removeLegacyPlaintextSettings,
+ } from './protected-settings-migration';
+ 
+@@ -43,10 +45,23 @@ export class RendererTabManager {
+     if (legacy.hadLegacy) {
+       let migrated = false;
+       try {
+-        this.settingsView = await window.bridge.migrateLegacySettings(legacy);
++        const migratedView = await window.bridge.migrateLegacySettings(legacy);
++        if (!legacyMigrationIsConfirmed(legacy, migratedView)) {
++          throw new Error('Protected migration could not be confirmed.');
++        }
++        this.settingsView = migratedView;
+         migrated = true;
+       } catch {
+-        this.settingsView = await window.bridge.getProtectedSettings();
++        const current = await window.bridge.getProtectedSettings();
++        this.settingsView = {
++          ...current,
++          protection: {
++            ...current.protection,
++            warning:
++              current.protection.warning ||
++              'Legacy plaintext migration is pending. Re-enter and save secrets before live use.',
++          },
++        };
+       }
+       if (migrated && !removeLegacyPlaintextSettings(localStorage)) {
+         throw new Error('Protected migration succeeded, but legacy plaintext could not be removed.');
+@@ -63,12 +78,18 @@ export class RendererTabManager {
+   }
+ 
+   async saveProtectedSettings(update: ProtectedSettingsUpdate): Promise<void> {
++    const legacy = collectLegacyPlaintextSettings(localStorage);
+     this.settingsView = await window.bridge.saveProtectedSettings(update);
++    this.botRunning = false;
++    localStorage.setItem('botEnabled', 'false');
