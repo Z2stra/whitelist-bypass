@@ -1,42 +1,133 @@
-import { ipcMain } from 'electron';
+import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { pathToFileURL } from 'url';
 import { TabManager } from './tab-manager';
 import { BotManager } from '../bot/bot-manager';
 import { safeErrorMessage } from '../bot/security';
 import { IPC } from '../constants';
-import { TunnelMode, Platform, BotSettings, HeadlessStartArgs, UpstreamProxy } from '../types';
+import {
+  BotSettings,
+  HeadlessStartArgs,
+  Platform,
+  TunnelMode,
+  UpstreamProxy,
+} from '../types';
+import {
+  TrustPolicyError,
+  assertArgumentCount,
+  assertBotSettingsShape,
+  assertHeadlessStartArgs,
+  assertOptionalPlatform,
+  assertPlatform,
+  assertRemoteUrl,
+  assertScriptFile,
+  assertSensitiveResult,
+  assertTabId,
+  assertTunnelMode,
+  assertUpstreamProxy,
+  isTrustedIpcSenderSnapshot,
+} from './trust-policy';
+
+const APP_INDEX_PATH = path.join(__dirname, '..', '..', 'index.html');
+const APP_INDEX_URL = pathToFileURL(APP_INDEX_PATH).toString();
+const SCRIPTS_ROOT = path.resolve(__dirname, '..', '..', 'scripts');
+
+type TrustedHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
+
+function assertTrustedIpcSender(event: IpcMainInvokeEvent, tabManager: TabManager): void {
+  const mainWindow = tabManager.mainWindow;
+  const senderFrame = event.senderFrame;
+  if (!mainWindow || mainWindow.isDestroyed() || !senderFrame) {
+    throw new TrustPolicyError('IPC sender is unavailable');
+  }
+
+  const snapshot = {
+    senderId: event.sender.id,
+    expectedSenderId: mainWindow.webContents.id,
+    frameUrl: senderFrame.url,
+    expectedFrameUrl: APP_INDEX_URL,
+    isMainFrame:
+      senderFrame.processId === event.sender.mainFrame.processId &&
+      senderFrame.routingId === event.sender.mainFrame.routingId,
+  };
+
+  if (!isTrustedIpcSenderSnapshot(snapshot)) {
+    throw new TrustPolicyError('IPC sender is not trusted');
+  }
+}
+
+function registerTrustedHandler(
+  channel: string,
+  tabManager: TabManager,
+  handler: TrustedHandler,
+): void {
+  ipcMain.handle(channel, async (event, ...args) => {
+    assertTrustedIpcSender(event, tabManager);
+    return handler(event, ...args);
+  });
+}
+
+function assertNoArguments(args: unknown[]): void {
+  assertArgumentCount(args.length, [0]);
+}
 
 export function registerIpcHandlers(tabManager: TabManager): void {
-  ipcMain.handle(IPC.GET_HOOK_CODE, async (_e, tabId: string, url: string) => {
+  registerTrustedHandler(IPC.GET_HOOK_CODE, tabManager, async (_event, ...args) => {
+    assertArgumentCount(args.length, [2]);
+    const tabId = assertTabId(args[0]);
+    const url = assertRemoteUrl(args[1]);
     const tab = await tabManager.getOrCreateTab(tabId);
     return tabManager.loadHook(tabId, url, tab);
   });
 
-  ipcMain.handle(IPC.GET_CALL_CREATOR_CODE, async (_e, scriptFile: string) => {
-    const filePath = path.join(__dirname, '..', '..', 'scripts', scriptFile || 'vk-call-creator.js');
+  registerTrustedHandler(IPC.GET_CALL_CREATOR_CODE, tabManager, async (_event, ...args) => {
+    assertArgumentCount(args.length, [1]);
+    const scriptFile = assertScriptFile(args[0]);
+    const filePath = path.resolve(SCRIPTS_ROOT, scriptFile);
+    if (path.dirname(filePath) !== SCRIPTS_ROOT) {
+      throw new TrustPolicyError('Script path escaped the allowlisted directory');
+    }
     return fs.readFile(filePath, 'utf8');
   });
 
-  ipcMain.handle(IPC.SET_TUNNEL_MODE, (_e, tabId: string, mode: string, platform?: string) => {
-    if (!Object.values(TunnelMode).includes(mode as TunnelMode)) return;
-    tabManager.setTunnelMode(tabId, mode as TunnelMode, platform as Platform | undefined);
+  registerTrustedHandler(IPC.SET_TUNNEL_MODE, tabManager, async (_event, ...args) => {
+    assertArgumentCount(args.length, [2, 3]);
+    const tabId = assertTabId(args[0]);
+    const mode = assertTunnelMode(args[1]);
+    const platform = assertOptionalPlatform(args[2]);
+    await tabManager.setTunnelMode(tabId, mode, platform);
   });
 
-  ipcMain.handle(IPC.START_RELAY, async (_e, tabId: string) => {
+  registerTrustedHandler(IPC.START_RELAY, tabManager, async (_event, ...args) => {
+    assertArgumentCount(args.length, [1]);
+    const tabId = assertTabId(args[0]);
     const tab = await tabManager.getOrCreateTab(tabId);
     tabManager.startRelay(tabId, tab);
   });
 
-  ipcMain.handle(IPC.START_HEADLESS, async (_e, tabId: string, platform: string, args: HeadlessStartArgs) => {
-    await tabManager.startHeadless(tabId, platform as Platform, args);
+  registerTrustedHandler(IPC.START_HEADLESS, tabManager, async (_event, ...args) => {
+    assertArgumentCount(args.length, [3]);
+    const tabId = assertTabId(args[0]);
+    const platform = assertPlatform(args[1]);
+    const startArgs = assertHeadlessStartArgs(args[2]);
+    await tabManager.startHeadless(tabId, platform, startArgs);
   });
 
-  ipcMain.handle(IPC.CLOSE_TAB, (_e, tabId: string) => {
-    tabManager.deleteTab(tabId);
+  registerTrustedHandler(IPC.CLOSE_TAB, tabManager, (_event, ...args) => {
+    assertArgumentCount(args.length, [1]);
+    tabManager.deleteTab(assertTabId(args[0]));
   });
 
-  ipcMain.handle(IPC.START_BOT, async (_e, settings: BotSettings) => {
+  registerTrustedHandler(IPC.START_BOT, tabManager, async (_event, ...args) => {
+    assertArgumentCount(args.length, [1]);
+    let settings: BotSettings;
+    try {
+      settings = assertBotSettingsShape(args[0]);
+    } catch (error) {
+      return { success: false, error: safeErrorMessage(error, 'VK bot configuration') };
+    }
+
     if (tabManager.botManager) {
       tabManager.botManager.stop();
       tabManager.botManager = null;
@@ -93,7 +184,8 @@ export function registerIpcHandlers(tabManager: TabManager): void {
     }
   });
 
-  ipcMain.handle(IPC.STOP_BOT, () => {
+  registerTrustedHandler(IPC.STOP_BOT, tabManager, (_event, ...args) => {
+    assertNoArguments(args);
     if (tabManager.botManager) {
       tabManager.botManager.stop();
       tabManager.botManager = null;
@@ -101,19 +193,26 @@ export function registerIpcHandlers(tabManager: TabManager): void {
     return { success: true };
   });
 
-  ipcMain.handle(IPC.SET_UPSTREAM_PROXY, (_e, proxy: UpstreamProxy) => {
+  registerTrustedHandler(IPC.SET_UPSTREAM_PROXY, tabManager, (_event, ...args) => {
+    assertArgumentCount(args.length, [1]);
+    const proxy: UpstreamProxy = assertUpstreamProxy(args[0]);
     tabManager.setUpstreamProxy(proxy);
   });
 
-  ipcMain.handle(IPC.CLEAR_COOKIES, (_e, platform: string) => {
-    return tabManager.clearPlatformCookies(platform as Platform);
+  registerTrustedHandler(IPC.CLEAR_COOKIES, tabManager, (_event, ...args) => {
+    assertArgumentCount(args.length, [1]);
+    return tabManager.clearPlatformCookies(assertPlatform(args[0]));
   });
 
-  ipcMain.handle(IPC.SEND_BOT_CALL_LINK, (_e, tabId: string, link: string) => {
-    return tabManager.sendBotCallLink(tabId, link);
+  registerTrustedHandler(IPC.SEND_BOT_CALL_LINK, tabManager, (_event, ...args) => {
+    assertArgumentCount(args.length, [2]);
+    const tabId = assertTabId(args[0]);
+    const result = assertSensitiveResult(args[1]);
+    return tabManager.sendBotCallLink(tabId, result);
   });
 
-  ipcMain.handle(IPC.EXPORT_COOKIES_ZIP, async () => {
+  registerTrustedHandler(IPC.EXPORT_COOKIES_ZIP, tabManager, (_event, ...args) => {
+    assertNoArguments(args);
     return tabManager.buildCookiesZip();
   });
 }
