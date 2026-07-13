@@ -23,9 +23,7 @@ concurrency:
 jobs:
   creator:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -53,3 +51,7 @@ jobs:
       - name: Unit and regression tests
         working-directory: creator-app
         run: npm test
+
+      - name: Electron renderer isolation smoke test
+        working-directory: creator-app
+        run: xvfb-run -a npm run smoke:electron
