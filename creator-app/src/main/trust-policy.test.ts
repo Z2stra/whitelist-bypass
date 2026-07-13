@@ -72,6 +72,7 @@ test('permission policy defaults to deny and only admits media/fullscreen on act
   assert.equal(isAllowedPermission('fullscreen', 'https://telemost.yandex.ru/j/x'), true);
   assert.equal(isAllowedPermission('media', 'https://dion.vc/event/x'), true);
   assert.equal(isAllowedPermission('media', 'https://stream.wb.ru/room/x'), true);
+  assert.equal(isAllowedPermission('media', 'https://login.vk.com/'), false);
   assert.equal(isAllowedPermission('media', 'https://passport.yandex.ru/auth'), false);
   assert.equal(isAllowedPermission('media', 'https://mail.yandex.ru/'), false);
   assert.equal(isAllowedPermission('notifications', 'https://vk.com/call'), false);
