@@ -1,0 +1,159 @@
+   registerTrustedHandler(IPC.SEND_BOT_CALL_LINK, tabManager, (_event, ...args) => {
+diff --git a/creator-app/src/main/process-termination.test.ts b/creator-app/src/main/process-termination.test.ts
+new file mode 100644
+index 0000000..e5ec06b
+--- /dev/null
++++ b/creator-app/src/main/process-termination.test.ts
+@@ -0,0 +1,63 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { EventEmitter } from 'events';
++import type { ChildProcess } from 'child_process';
++import { terminateChildProcess } from './process-termination';
++
++class FakeChildProcess extends EventEmitter {
++  pid: number | undefined = 1234;
++  exitCode: number | null = null;
++  signalCode: NodeJS.Signals | null = null;
++  readonly signals: Array<NodeJS.Signals | undefined> = [];
++
++  constructor(private readonly mode: 'graceful' | 'forced' | 'stuck') {
++    super();
++  }
++
++  kill(signal?: NodeJS.Signals): boolean {
++    this.signals.push(signal);
++    if (this.mode === 'graceful' && signal === undefined) {
++      setImmediate(() => this.finish('SIGTERM'));
++    }
++    if (this.mode === 'forced' && signal === 'SIGKILL') {
++      setImmediate(() => this.finish('SIGKILL'));
++    }
++    return true;
++  }
++
++  private finish(signal: NodeJS.Signals): void {
++    this.signalCode = signal;
++    this.emit('exit', null, signal);
++    this.emit('close', null, signal);
++  }
++}
++
++test('child termination waits for graceful exit', async () => {
++  const proc = new FakeChildProcess('graceful');
++  await terminateChildProcess(proc as unknown as ChildProcess, {
++    gracefulTimeoutMs: 50,
++    forceTimeoutMs: 20,
++  });
++  assert.deepEqual(proc.signals, [undefined]);
++});
++
++test('child termination escalates to SIGKILL after the graceful deadline', async () => {
++  const proc = new FakeChildProcess('forced');
++  await terminateChildProcess(proc as unknown as ChildProcess, {
++    gracefulTimeoutMs: 5,
++    forceTimeoutMs: 50,
++  });
++  assert.deepEqual(proc.signals, [undefined, 'SIGKILL']);
++});
++
++test('child termination rejects instead of activating new credentials while a process is alive', async () => {
++  const proc = new FakeChildProcess('stuck');
++  await assert.rejects(
++    terminateChildProcess(proc as unknown as ChildProcess, {
++      gracefulTimeoutMs: 5,
++      forceTimeoutMs: 5,
++    }),
++    /did not exit/,
++  );
++  assert.deepEqual(proc.signals, [undefined, 'SIGKILL']);
++});
+diff --git a/creator-app/src/main/process-termination.ts b/creator-app/src/main/process-termination.ts
+new file mode 100644
+index 0000000..7c6e895
+--- /dev/null
++++ b/creator-app/src/main/process-termination.ts
+@@ -0,0 +1,59 @@
++import type { ChildProcess } from 'child_process';
++
++export interface ProcessTerminationOptions {
++  gracefulTimeoutMs?: number;
++  forceTimeoutMs?: number;
++}
++
++function hasExited(proc: ChildProcess): boolean {
++  return proc.pid == null || proc.exitCode !== null || proc.signalCode !== null;
++}
++
++function waitForExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
++  if (hasExited(proc)) return Promise.resolve(true);
++  return new Promise((resolve) => {
++    let settled = false;
++    let timer: NodeJS.Timeout | undefined;
++    const finish = (value: boolean): void => {
++      if (settled) return;
++      settled = true;
++      if (timer) clearTimeout(timer);
++      proc.removeListener('exit', onExit);
++      proc.removeListener('close', onExit);
++      proc.removeListener('error', onError);
++      resolve(value);
++    };
++    const onExit = (): void => finish(true);
++    const onError = (): void => {
++      if (hasExited(proc)) finish(true);
++    };
++    proc.once('exit', onExit);
++    proc.once('close', onExit);
++    proc.once('error', onError);
++    timer = setTimeout(() => finish(hasExited(proc)), Math.max(0, timeoutMs));
++    if (hasExited(proc)) finish(true);
++  });
++}
++
++function requestKill(proc: ChildProcess, signal?: NodeJS.Signals): void {
++  try {
++    proc.kill(signal);
++  } catch {}
++}
++
++export async function terminateChildProcess(
++  proc: ChildProcess,
++  options: ProcessTerminationOptions = {},
++): Promise<void> {
++  if (hasExited(proc)) return;
++  const gracefulTimeoutMs = options.gracefulTimeoutMs ?? 3000;
++  const forceTimeoutMs = options.forceTimeoutMs ?? 1000;
++
++  requestKill(proc);
++  if (await waitForExit(proc, gracefulTimeoutMs)) return;
++
++  requestKill(proc, 'SIGKILL');
++  if (await waitForExit(proc, forceTimeoutMs)) return;
++
++  throw new Error('Child process did not exit after termination request');
++}
+diff --git a/creator-app/src/main/protected-settings-static.test.ts b/creator-app/src/main/protected-settings-static.test.ts
+index 638853f..0d6a489 100644
+--- a/creator-app/src/main/protected-settings-static.test.ts
++++ b/creator-app/src/main/protected-settings-static.test.ts
+@@ -85,13 +85,20 @@ test('protected settings are single-instance and stop all existing secret consum
+   assert.notEqual(saveStart, -1);
+   assert.notEqual(saveEnd, -1);
+   const saveHandler = ipc.slice(saveStart, saveEnd);
+-  assert.match(saveHandler, /protectedSettings\.applyUpdate/);
+-  assert.match(saveHandler, /tabManager\.killAllRelays\(\)/);
++  assert.match(saveHandler, /validateProtectedSettingsUpdate/);
++  assert.match(saveHandler, /runSecretLifecycle/);
++  assert.match(saveHandler, /await stopSecretConsumers\(tabManager\)/);
+   assert.ok(
+-    saveHandler.indexOf('tabManager.killAllRelays()') <
+-      saveHandler.indexOf('tabManager.setUpstreamProxy'),
+-    'old child processes must stop before the new proxy credentials become active',
++    saveHandler.indexOf('await stopSecretConsumers(tabManager)') <
++      saveHandler.indexOf('protectedSettings.applyUpdate'),
++    'old secret consumers must exit before replacement credentials are persisted',
+   );
++  assert.match(manager, /async stopAllRelaysAndWait/);
++  assert.match(manager, /activeProcesses = new Set<ChildProcess>/);
++  assert.match(manager, /await terminateChildProcess\(proc\)/);
