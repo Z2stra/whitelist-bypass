@@ -38,8 +38,15 @@ const REMOTE_HOST_ROOTS = [
 
 const LEGACY_HOOK_HOST_ROOTS = ['vk.com', 'vk.ru'] as const;
 const LEGACY_HOOK_EXACT_HOSTS = new Set(['telemost.yandex.ru']);
-const ACTIVE_MEDIA_HOST_ROOTS = ['vk.com', 'vk.ru', 'dion.vc', 'stream.wb.ru'] as const;
-const ACTIVE_MEDIA_EXACT_HOSTS = new Set(['telemost.yandex.ru']);
+const ACTIVE_MEDIA_EXACT_HOSTS = new Set([
+  'vk.com',
+  'vk.ru',
+  'calls.vk.com',
+  'calls.vk.ru',
+  'telemost.yandex.ru',
+  'dion.vc',
+  'stream.wb.ru',
+]);
 const ALLOWED_PERMISSIONS = new Set(['media', 'fullscreen']);
 const ALLOWED_SCRIPT_FILES = new Set([
   'call-checker.js',
@@ -146,11 +153,7 @@ export function isAllowedPermission(permission: string, requestingUrl: unknown):
   if (!ALLOWED_PERMISSIONS.has(permission)) return false;
   const parsed = parseHttpsUrl(requestingUrl);
   if (!parsed) return false;
-  const hostname = parsed.hostname.toLowerCase();
-  return (
-    ACTIVE_MEDIA_EXACT_HOSTS.has(hostname) ||
-    ACTIVE_MEDIA_HOST_ROOTS.some((root) => hostMatchesRoot(hostname, root))
-  );
+  return ACTIVE_MEDIA_EXACT_HOSTS.has(parsed.hostname.toLowerCase());
 }
 
 export function hardenGuestWebPreferences(preferences: GuestWebPreferencesLike): void {
