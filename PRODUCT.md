@@ -47,7 +47,7 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [x] Propagate `messages.send` failures to callers.
 - [x] Separate functional process events (for example a join link) from redacted diagnostic logs.
 - [x] Cover token, Long Poll key, Authorization headers, proxy credentials, platform links, room IDs and cookie material in log-redaction tests.
-- [ ] Restrict the POC handler to `WLB-POC/1` PING/PONG; operational join/start/close commands remain disabled in POC mode.
+- [x] Restrict the POC handler to `WLB-POC/1` PING/PONG; operational join/start/close commands remain disabled in POC mode.
 - [x] Validate Electron IPC senders and runtime arguments.
 - [x] Remove Node privileges from remote web content and restrict navigation, redirects, popups and permissions to explicit platform origins.
 - [ ] Move long-lived secrets out of renderer `localStorage`; document remaining cookie-storage risk.
@@ -57,7 +57,7 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [ ] Register/configure the VK ID Android application without committing secrets.
 - [ ] Implement an isolated debug/POC Android login flow.
 - [ ] Implement Android `messages.send` PING.
-- [ ] Implement Creator POC-only PING parser and PONG sender.
+- [x] Implement Creator POC-only PING parser and PONG sender.
 - [ ] Implement Android history polling and strict response correlation.
 - [ ] Exercise token refresh, logout, restart and re-login.
 - [ ] Run repeated exchanges on the target restricted mobile network.
@@ -118,4 +118,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: Phase 0 documentation is established. Android baseline checks are green. VK transport hardening, typed headless process events, IPC sender/argument validation and remote-webview isolation are implemented and covered by Creator CI. The pre-POC security gate remains open because POC-only handling and protected main-process secret storage/cookie review are not complete. Official VK API POC has not started. Real credentials must not be entered yet.**
+**Current status: Phase 0 documentation is established. Android baseline checks are green. VK transport hardening, typed headless process events, IPC sender/argument validation and remote-webview isolation are implemented and covered by Creator CI. The Creator POC-only `WLB-POC/1` PING/PONG handler is implemented and isolated from operational commands. The pre-POC security gate remains open because protected main-process secret storage and cookie persistence/export review are not complete. Official VK API POC has not started. Real credentials must not be entered yet.**
