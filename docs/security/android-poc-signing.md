@@ -143,7 +143,7 @@ $ApkHash = Get-FileHash $Apk -Algorithm SHA256
 $ApkHash
 ```
 
-The APK signer must also match the public certificate exported from the configured keystore. This comparison does not expose the private key:
+The APK signer must also match the public certificate exported from the configured keystore. This comparison does not expose the private key. Current Android build-tools can label the same certificate line as `V2 Signer`, `V3 Signer` or another scheme-specific signer, so the parser intentionally does not require a literal `Signer #1` prefix:
 
 ```powershell
 $ExportedCertificate = Join-Path $env:TEMP 'wlb-poc-signing-cert.der'
@@ -159,19 +159,34 @@ $ExpectedCertSha256 = (
   Get-FileHash $ExportedCertificate -Algorithm SHA256
 ).Hash.ToLowerInvariant()
 
-$ActualCertLine = $ApkCertOutput |
-  Select-String '^Signer #1 certificate SHA-256 digest:\s*(\S+)$' |
+$ReportedSignerCountLine = $ApkCertOutput |
+  Select-String '^Number of signers:\s*(\d+)$' |
   Select-Object -First 1
 
-if (-not $ActualCertLine) {
-  throw 'APK signer SHA-256 was not reported by apksigner'
+$ActualCertLines = $ApkCertOutput |
+  Select-String '^.*Signer:\s+certificate SHA-256 digest:\s*(\S+)$'
+
+if (-not $ReportedSignerCountLine) {
+  throw 'apksigner did not report the APK signer count'
 }
 
-$ActualCertSha256 = (
-  $ActualCertLine.Matches[0].Groups[1].Value
-).ToLowerInvariant()
+$ReportedSignerCount = [int](
+  $ReportedSignerCountLine.Matches[0].Groups[1].Value
+)
 
-if ($ActualCertSha256 -ne $ExpectedCertSha256) {
+$ActualCertSha256 = @(
+  $ActualCertLines |
+    ForEach-Object {
+      $_.Matches[0].Groups[1].Value.Replace(':', '').ToLowerInvariant()
+    } |
+    Sort-Object -Unique
+)
+
+if ($ReportedSignerCount -ne 1 -or $ActualCertSha256.Count -ne 1) {
+  throw 'POC APK must contain exactly one unique signer certificate'
+}
+
+if ($ActualCertSha256[0] -ne $ExpectedCertSha256) {
   throw 'APK signer certificate does not match the persistent POC keystore'
 }
 
@@ -256,7 +271,7 @@ Public CI never uses the real POC key. The Android workflow:
 4. generates an ephemeral CI-only PKCS12 key;
 5. runs unit tests, Android lint and normal debug assembly without POC credentials;
 6. builds a synthetic signed POC APK from a complete environment configuration;
-7. compares the APK signer-certificate SHA-256 with the certificate exported from the generated CI key;
+7. requires exactly one APK signer and compares its certificate SHA-256 with the certificate exported from the generated CI key;
 8. derives expected package/version identity from Gradle and compares it with the APK;
 9. builds a signed POC bundle through the ignored `keystore.properties` fallback;
 10. does not publish CI-only POC APK/AAB files as live artifacts.
