@@ -1,0 +1,40 @@
+name: Repository signing-material policy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-signing-policy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tracked-signing-material:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reject tracked private signing material
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked="$({
+            git ls-files | grep -Ei \
+              '(^|/)(keystore|signing|vkid|vk-poc)\.properties$|\.(jks|keystore|p12|pfx|pkcs12|ks|bcfks|pem|key)$'
+          } || true)"
+
+          if [[ -n "$tracked" ]]; then
+            echo "Private signing material must not be tracked anywhere in the repository:"
+            printf '%s\n' "$tracked"
+            exit 1
+          fi
