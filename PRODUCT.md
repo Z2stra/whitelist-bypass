@@ -64,12 +64,15 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 
 - [x] Remove the repository-owned Android debug keystore from active debug/release signing.
 - [x] Keep normal debug signing machine-local and leave production release signing intentionally unconfigured.
-- [x] Add a distinct `poc` build type that requires an external PKCS12 key and a strictly increasing `WLB_POC_BUILD_NUMBER`.
-- [x] Apply the per-build POC version code only to the `poc` variant; normal debug/release outputs retain the stable base identity.
-- [x] Reject partial signing environments at the POC artifact boundary without breaking ordinary `test`, `lintDebug` or `assembleDebug` tasks.
-- [x] Make APK, bundle and aggregate POC packaging fail closed when signing inputs or the keystore are unavailable.
-- [x] Verify public-CI signing with an ephemeral key, exact APK signer-certificate matching, Gradle-derived identity, non-debuggable output and both environment/properties input paths.
-- [x] Enforce a repository-wide tracked-signing-material policy on every pull request regardless of changed paths.
+- [x] Add a distinct non-debuggable `poc` build type that requires an external PKCS12 key and a strictly increasing `WLB_POC_BUILD_NUMBER`.
+- [x] Apply the per-build live version code only to the signed POC APK; normal debug/release outputs retain the stable base identity.
+- [x] Reject partial signing environments at the POC APK boundary without breaking ordinary `test`, `lintDebug` or `assembleDebug` tasks.
+- [x] Make supported POC APK and aggregate APK packaging fail closed when signing inputs or the keystore are unavailable.
+- [x] Explicitly reject POC Android App Bundle production; live POC delivery is APK-only.
+- [x] Verify public-CI signing with an ephemeral key, exact APK signer-certificate matching, Gradle-derived identity, non-debuggable output and both environment/properties APK input paths.
+- [x] Verify that the ordinary release APK remains unsigned.
+- [x] Run a repository-wide tracked-signing-material workflow on every pull request regardless of changed paths.
+- [ ] Require `Repository signing-material policy / tracked-signing-material` before merging to `main` through GitHub branch protection or a ruleset.
 - [x] Expand `.gitignore` coverage for signing material, local configuration, build output and live bundles.
 - [ ] Create and securely back up the persistent private POC keystore on the trusted build machine.
 - [ ] Build the first locally signed POC APK and verify its public certificate fingerprint and SHA-256.
@@ -142,4 +145,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: the pre-POC Creator security gate is implemented, merged and locally confirmed on Windows with DPAPI. The official VK API POC has not started. The active milestone is the artifact/signing gate for a separate source-free test machine: the published Android debug key is being retired, POC APK signing is external and fail-closed, per-build identity is isolated to the `poc` variant, and a lightweight repository-wide workflow rejects tracked signing material on every pull request. No live APK should be installed until a persistent private POC key is created and backed up, the first signed APK is verified, and the versioned Creator/Android live-test bundle is available. WLB2, pairing and session orchestration remain blocked pending the official VK API GO/NO-GO result.**
+**Current status: the pre-POC Creator security gate is implemented, merged and locally confirmed on Windows with DPAPI. The official VK API POC has not started. The active milestone is the artifact/signing gate for a separate source-free test machine: the published Android debug key is being retired, live POC delivery is restricted to a signed non-debuggable APK, per-build identity is isolated to that APK, and a lightweight repository-wide workflow scans tracked signing material on every pull request. GitHub branch protection/ruleset enforcement of that check remains an explicit operator task. No live APK should be installed until a persistent private POC key is created and backed up, the first signed APK is verified, and the versioned Creator/Android live-test bundle is available. WLB2, pairing and session orchestration remain blocked pending the official VK API GO/NO-GO result.**
