@@ -134,17 +134,27 @@ jobs:
           BUILD_NUMBER: "1"
         run: ./gradlew --no-daemon :app:assemblePoc
 
-      - name: Verify CI-only POC APK signature
+      - name: Verify CI-only POC APK signature and identity
         working-directory: android-app
         shell: bash
         run: |
           set -euo pipefail
+          apk="app/build/outputs/apk/poc/app-poc.apk"
           apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
-          if [[ -z "$apksigner" ]]; then
-            echo "apksigner was not found"
+          aapt="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          if [[ -z "$apksigner" || -z "$aapt" ]]; then
+            echo "Android APK verification tools were not found"
             exit 1
           fi
-          "$apksigner" verify --verbose app/build/outputs/apk/poc/app-poc.apk
+
+          "$apksigner" verify --verbose "$apk"
+
+          package_line="$("$aapt" dump badging "$apk" | head -n 1)"
+          expected="package: name='bypass.whitelist' versionCode='3007001' versionName='0.3.7-poc.1'"
+          if [[ "$package_line" != *"$expected"* ]]; then
+            printf 'Unexpected APK identity: %s\n' "$package_line"
+            exit 1
+          fi
 
       - name: Upload Android reports and debug APK
         if: always()
