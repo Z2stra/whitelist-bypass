@@ -20,6 +20,28 @@ Signing responsibility is now split as follows:
 
 The application ID remains `bypass.whitelist`. All POC APK updates for one installed application must therefore use the same private POC key.
 
+## Repository-wide signing-material policy
+
+A lightweight GitHub Actions workflow runs on every pull request without path filters. It rejects tracked private signing property files and common key containers anywhere in the repository, including:
+
+```text
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pkcs12
+*.ks
+*.bcfks
+*.pem
+*.key
+keystore.properties
+signing.properties
+vkid.local.properties
+vk-poc.local.properties
+```
+
+The heavier Android quality workflow remains path-filtered. The repository-wide workflow is the permanent guard against adding a key outside `android-app` in a future unrelated PR.
+
 ## Supported local inputs
 
 Preferred environment variables:
@@ -32,7 +54,18 @@ WLB_POC_KEY_PASSWORD
 WLB_POC_BUILD_NUMBER
 ```
 
-All four `WLB_POC_*` signing values must be supplied together. A partial signing environment is rejected; individual environment fields are never mixed with values from `keystore.properties`.
+All four `WLB_POC_*` signing values must be supplied together. Individual environment fields are never filled from `keystore.properties`.
+
+A partial signing environment is tolerated while running ordinary non-POC tasks such as:
+
+```text
+test
+lintDebug
+assembleDebug
+tasks
+```
+
+but it is rejected when a POC APK, AAB or aggregate build is requested. This prevents stale local variables from breaking normal development while keeping live artifact production fail-closed.
 
 When all four signing environment variables are absent, copy:
 
@@ -74,6 +107,36 @@ keytool.exe -genkeypair `
 ```
 
 Let `keytool` prompt for private values. Back up the keystore and passwords through a separate protected channel. Losing the key prevents in-place updates of previously installed POC APKs.
+
+## Variant identity isolation
+
+The base identity is stable and does not depend on `WLB_POC_BUILD_NUMBER`:
+
+```text
+debug/release versionName = 0.3.7
+debug/release versionCode = 3007000
+```
+
+Only the `poc` variant receives the numbered live identity:
+
+```text
+poc.1 versionName = 0.3.7-poc.1
+poc.1 versionCode = 3007001
+
+poc.2 versionName = 0.3.7-poc.2
+poc.2 versionCode = 3007002
+```
+
+The expected values come from the same Gradle constants used for packaging:
+
+```powershell
+.\gradlew.bat --no-daemon -q :app:printBaseIdentity
+
+$env:WLB_POC_BUILD_NUMBER = '1'
+.\gradlew.bat --no-daemon -q :app:printPocIdentity
+```
+
+Setting `WLB_POC_BUILD_NUMBER` must never change the identity of an `assembleDebug` result.
 
 ## Building a live POC APK
 
@@ -137,7 +200,11 @@ $Apk = ".\app\build\outputs\apk\poc\app-poc.apk"
 $ApkCertOutput = & $ApkSigner.FullName verify --verbose --print-certs $Apk
 $ApkCertOutput
 
-& $Aapt.FullName dump badging $Apk | Select-Object -First 1
+$BadgingOutput = & $Aapt.FullName dump badging $Apk
+$BadgingOutput | Select-Object -First 1
+if ($BadgingOutput -match 'application-debuggable') {
+  throw 'POC APK must not be debuggable'
+}
 
 $ApkHash = Get-FileHash $Apk -Algorithm SHA256
 $ApkHash
@@ -263,17 +330,26 @@ This proves that the same private key and a larger `versionCode` support in-plac
 
 ## CI policy
 
-Public CI never uses the real POC key. The Android workflow:
+Public CI never uses the real POC key.
 
-1. verifies that no private-key/signing file is tracked;
-2. proves that `assemblePoc`, `bundlePoc` and aggregate `build` fail closed without signing configuration and leave no POC artifact;
-3. proves that a partial signing environment is rejected rather than mixed with properties;
-4. generates an ephemeral CI-only PKCS12 key;
-5. runs unit tests, Android lint and normal debug assembly without POC credentials;
+The repository signing-material workflow:
+
+1. runs on every pull request without path filters;
+2. scans all tracked file names;
+3. rejects private signing property files and common key-container extensions anywhere in the repository.
+
+The Android quality workflow:
+
+1. proves that `assemblePoc`, `bundlePoc` and aggregate `build` fail closed without signing configuration and leave no final POC artifact;
+2. proves that a partial signing environment does not break `test`, `lintDebug` or `assembleDebug`;
+3. proves that the same partial environment is rejected for POC artifact production;
+4. proves that `WLB_POC_BUILD_NUMBER` does not leak into the normal debug identity;
+5. generates an ephemeral CI-only PKCS12 key;
 6. builds a synthetic signed POC APK from a complete environment configuration;
 7. requires exactly one APK signer and compares its certificate SHA-256 with the certificate exported from the generated CI key;
-8. derives expected package/version identity from Gradle and compares it with the APK;
-9. builds a signed POC bundle through the ignored `keystore.properties` fallback;
-10. does not publish CI-only POC APK/AAB files as live artifacts.
+8. verifies non-debuggable POC output;
+9. derives expected package/version identity from Gradle and compares it with the APK;
+10. builds a signed POC bundle through the ignored `keystore.properties` fallback;
+11. does not publish CI-only POC APK/AAB files as live artifacts.
 
 The CI key is disposable and must never be used on a physical POC device.
