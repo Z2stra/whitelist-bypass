@@ -11,7 +11,13 @@ export function normalizeWBDeviceId(value: unknown): string | null {
 export function isWBDeviceIdSourceUrl(rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl);
-    return url.protocol === 'https:' && url.hostname.toLowerCase() === 'stream.wb.ru';
+    return (
+      url.protocol === 'https:' &&
+      url.hostname.toLowerCase() === 'stream.wb.ru' &&
+      url.port === '' &&
+      url.username === '' &&
+      url.password === ''
+    );
   } catch {
     return false;
   }
