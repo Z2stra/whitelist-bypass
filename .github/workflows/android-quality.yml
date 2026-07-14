@@ -197,6 +197,8 @@ jobs:
           WLB_POC_KEY_PASSWORD: ci-only-poc-password
         run: |
           set -euo pipefail
+          diagnostics="app/build/reports/poc-signing-gate"
+          mkdir -p "$diagnostics"
           apk="app/build/outputs/apk/poc/app-poc.apk"
           apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
           aapt="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
@@ -214,24 +216,31 @@ jobs:
           expected_cert_sha256="$(sha256sum "$RUNNER_TEMP/wlb-ci-poc.cer" | awk '{print tolower($1)}')"
 
           cert_output="$("$apksigner" verify --verbose --print-certs "$apk")"
-          printf '%s\n' "$cert_output"
-          actual_cert_sha256="$(
-            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<<"$cert_output" |
-              head -n 1 |
-              tr -d '[:space:]' |
+          printf '%s\n' "$cert_output" | tee "$diagnostics/apksigner.txt"
+          mapfile -t signer_digests < <(
+            sed -n 's/^Signer #[0-9][0-9]* certificate SHA-256 digest: //p' <<<"$cert_output" |
+              sed 's/[[:space:]:]//g' |
               tr '[:upper:]' '[:lower:]'
-          )"
-          if [[ -z "$actual_cert_sha256" || "$actual_cert_sha256" != "$expected_cert_sha256" ]]; then
-            echo "POC APK signer certificate does not match the generated CI POC key"
+          )
+          {
+            printf 'expected=%s\n' "$expected_cert_sha256"
+            printf 'signer_count=%s\n' "${#signer_digests[@]}"
+            printf 'actual=%s\n' "${signer_digests[*]:-}"
+          } > "$diagnostics/signer-digests.txt"
+
+          if [[ ${#signer_digests[@]} -ne 1 || "${signer_digests[0]}" != "$expected_cert_sha256" ]]; then
+            echo "POC APK must have exactly one signer matching the generated CI POC key"
             exit 1
           fi
 
           identity_output="$(./gradlew --no-daemon -q :app:printPocIdentity)"
+          printf '%s\n' "$identity_output" > "$diagnostics/gradle-identity.txt"
           expected_package="$(sed -n 's/^WLB_POC_APPLICATION_ID=//p' <<<"$identity_output" | tail -n 1)"
           expected_version_code="$(sed -n 's/^WLB_POC_VERSION_CODE=//p' <<<"$identity_output" | tail -n 1)"
           expected_version_name="$(sed -n 's/^WLB_POC_VERSION_NAME=//p' <<<"$identity_output" | tail -n 1)"
 
           package_line="$("$aapt" dump badging "$apk" | head -n 1)"
+          printf '%s\n' "$package_line" > "$diagnostics/aapt-package.txt"
           actual_package="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<<"$package_line")"
           actual_version_code="$(sed -n "s/^package:.*versionCode='\([^']*\)'.*/\1/p" <<<"$package_line")"
           actual_version_name="$(sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p" <<<"$package_line")"
