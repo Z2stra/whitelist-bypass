@@ -21,10 +21,12 @@ All notable project changes made as part of the staged control-plane work are re
 - Added a reproducible Android CI gate for unit tests, `lintDebug`, debug APK assembly and report/artifact retention.
 - Removed the repository-owned `debug.keystore` from active use and stopped signing release output with a publicly available debug key.
 - Restored standard machine-local Android debug signing and left production release signing intentionally unconfigured.
-- Added a separate `poc` build type that requires an external private keystore plus a unique bounded `BUILD_NUMBER`.
+- Added a separate `poc` build type that requires an external PKCS12 keystore plus a strictly increasing bounded `WLB_POC_BUILD_NUMBER`.
 - Added local environment/property inputs for POC signing without committing key paths, aliases or passwords.
-- Made signed POC packaging fail closed when build identity or signing inputs are absent.
-- Added public-CI checks that reject tracked private signing material, prove fail-closed behavior, build with an ephemeral CI-only key and verify the resulting APK signature without publishing it as a live artifact.
+- Rejected partial signing environments so individual environment values cannot be silently mixed with `keystore.properties`.
+- Made signed APK, bundle and aggregate POC packaging fail closed when build identity or signing inputs are absent.
+- Added public-CI checks that reject tracked private signing material, exercise fail-closed artifact paths, verify both environment and properties configuration, compare the APK signer certificate with the generated CI key, and validate Gradle-derived APK identity without publishing CI POC artifacts.
+- Added an operator procedure for certificate-fingerprint comparison and first-install/in-place-update proof using two successively numbered POC APKs.
 - Expanded project, Android and Creator ignore rules for local secrets, signing files, build output, runtime profiles and versioned live bundles.
 
 ### Creator VK transport security
