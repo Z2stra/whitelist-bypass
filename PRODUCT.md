@@ -64,9 +64,10 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 
 - [x] Remove the repository-owned Android debug keystore from active debug/release signing.
 - [x] Keep normal debug signing machine-local and leave production release signing intentionally unconfigured.
-- [x] Add a distinct `poc` build type that requires an external private key and a unique `BUILD_NUMBER`.
-- [x] Make POC packaging fail closed when signing inputs or the keystore are unavailable.
-- [x] Verify the signing policy in public CI with an ephemeral CI-only key and APK signature verification.
+- [x] Add a distinct `poc` build type that requires an external PKCS12 key and a strictly increasing `WLB_POC_BUILD_NUMBER`.
+- [x] Reject partial signing environments instead of mixing individual environment and `keystore.properties` fields.
+- [x] Make APK, bundle and aggregate POC packaging fail closed when signing inputs or the keystore are unavailable.
+- [x] Verify public-CI signing with an ephemeral key, exact APK signer-certificate matching, Gradle-derived identity and both environment/properties input paths.
 - [x] Expand `.gitignore` coverage for signing material, local configuration, build output and live bundles.
 - [ ] Create and securely back up the persistent private POC keystore on the trusted build machine.
 - [ ] Build the first locally signed POC APK and verify its public certificate fingerprint and SHA-256.
