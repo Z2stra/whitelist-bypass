@@ -75,10 +75,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          diagnostics="app/build/reports/poc-signing-gate"
+          mkdir -p "$diagnostics"
 
           assert_fails_closed() {
             local label="$1"
             shift
+            local log_file="$diagnostics/$label.log"
             rm -f keystore.properties
             rm -rf app/build/outputs/apk/poc app/build/outputs/bundle/poc
 
@@ -92,6 +95,7 @@ jobs:
               ./gradlew --no-daemon "$@" 2>&1)"
             status=$?
             set -e
+            printf '%s\n' "$output" > "$log_file"
 
             if [[ $status -eq 0 ]]; then
               printf '%s unexpectedly succeeded without external signing configuration\n' "$label"
@@ -119,6 +123,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          diagnostics="app/build/reports/poc-signing-gate"
+          mkdir -p "$diagnostics"
           rm -f keystore.properties
           set +e
           output="$(env \
@@ -130,6 +136,7 @@ jobs:
             ./gradlew --no-daemon :app:assemblePoc 2>&1)"
           status=$?
           set -e
+          printf '%s\n' "$output" > "$diagnostics/partial-environment.log"
           if [[ $status -eq 0 ]]; then
             echo "Partial POC signing environment unexpectedly succeeded"
             exit 1
