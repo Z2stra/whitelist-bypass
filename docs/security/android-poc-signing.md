@@ -1,8 +1,9 @@
-# Android POC signing and artifact boundary
+# Android POC signing and APK delivery boundary
 
 - Status: implemented as the signing gate for future live POC APKs
 - Scope: Android APK identity, private-key handling, CI verification and transfer to the separate test machine
 - Live build type: `poc`
+- Live artifact: signed APK only
 
 ## Security boundary
 
@@ -10,15 +11,36 @@ The repository previously contained `android-app/debug.keystore`, and both the `
 
 The tracked key is therefore removed from active use and from the repository. Rewriting Git history is not treated as key recovery: the old key must remain permanently untrusted.
 
-Signing responsibility is now split as follows:
+Signing responsibility is split as follows:
 
 - `debug` uses the standard machine-local Android debug key;
 - `release` is deliberately unsigned until a separate production-signing design exists;
-- `poc` requires a private external PKCS12 POC key and a positive, bounded `WLB_POC_BUILD_NUMBER`;
+- `poc` produces a non-debuggable APK that requires a private external PKCS12 key and a positive, bounded `WLB_POC_BUILD_NUMBER`;
+- POC Android App Bundle production is explicitly unsupported;
 - no private signing key or password is accepted from committed source files;
 - the test Windows machine receives only the signed APK and its public manifest/checksum, never the keystore.
 
 The application ID remains `bypass.whitelist`. All POC APK updates for one installed application must therefore use the same private POC key.
+
+## Why POC delivery is APK-only
+
+The separate test machine and physical Android device install an APK directly. Google Play App Bundles are not part of this POC delivery channel.
+
+The numbered POC `versionCode` is applied through the Android variant output API, whose supported output is APK. Treating an AAB as equivalent would create an unverified identity path. Therefore:
+
+```text
+:app:assemblePoc   supported
+:app:installPoc    supported
+:app:bundlePoc     rejected
+```
+
+An attempted POC bundle build must fail with:
+
+```text
+POC AAB is not supported; build the signed POC APK with :app:assemblePoc
+```
+
+No `.aab` file may be transferred or described as a live POC artifact.
 
 ## Repository-wide signing-material policy
 
@@ -40,7 +62,15 @@ vkid.local.properties
 vk-poc.local.properties
 ```
 
-The heavier Android quality workflow remains path-filtered. The repository-wide workflow is the permanent guard against adding a key outside `android-app` in a future unrelated PR.
+The heavier Android quality workflow remains path-filtered. The repository-wide workflow is the permanent code-level guard against adding a key outside `android-app` in a future unrelated PR.
+
+A workflow that runs is not automatically a merge requirement. A repository administrator must configure `main` branch protection or a ruleset to require:
+
+```text
+Repository signing-material policy / tracked-signing-material
+```
+
+Until that repository setting is confirmed, the corresponding `PRODUCT.md` checkbox remains open.
 
 ## Supported local inputs
 
@@ -54,7 +84,7 @@ WLB_POC_KEY_PASSWORD
 WLB_POC_BUILD_NUMBER
 ```
 
-All four `WLB_POC_*` signing values must be supplied together. Individual environment fields are never filled from `keystore.properties`.
+All four signing variables must be supplied together. Individual environment fields are never filled from `keystore.properties`.
 
 A partial signing environment is tolerated while running ordinary non-POC tasks such as:
 
@@ -65,7 +95,7 @@ assembleDebug
 tasks
 ```
 
-but it is rejected when a POC APK, AAB or aggregate build is requested. This prevents stale local variables from breaking normal development while keeping live artifact production fail-closed.
+but it is rejected when a POC APK or an aggregate APK build is requested. This prevents stale local variables from breaking normal development while keeping live artifact production fail-closed.
 
 When all four signing environment variables are absent, copy:
 
@@ -88,7 +118,9 @@ wlb.poc.keyAlias=wlb-poc
 wlb.poc.keyPassword=<local value>
 ```
 
-`WLB_POC_BUILD_NUMBER` remains an environment input because it is public per-build identity rather than a persistent secret. Do not place real signing values in screenshots, chat, shell transcripts, issues, PRs or public CI variables.
+`WLB_POC_BUILD_NUMBER` remains an environment input because it is public per-build identity rather than a persistent secret.
+
+Do not place real signing values in screenshots, chat, shell transcripts, issues, PRs or public CI variables.
 
 ## One-time POC key creation
 
@@ -117,7 +149,7 @@ debug/release versionName = 0.3.7
 debug/release versionCode = 3007000
 ```
 
-Only the `poc` variant receives the numbered live identity:
+Only the signed POC APK receives the numbered live identity:
 
 ```text
 poc.1 versionName = 0.3.7-poc.1
@@ -140,7 +172,7 @@ Setting `WLB_POC_BUILD_NUMBER` must never change the identity of an `assembleDeb
 
 ## Building a live POC APK
 
-Every APK copied to the separate test machine must use a **strictly increasing** build number from `1` to `999`:
+Every APK copied to the separate test machine must use a strictly increasing build number from `1` to `999`:
 
 ```powershell
 Set-Location D:\github\src\whitelist-bypass\android-app
@@ -166,26 +198,20 @@ versionName = 0.3.7-poc.1
 versionCode = 3007001
 ```
 
-The public identity expected for a build can be printed from the same Gradle source used for packaging:
-
-```powershell
-.\gradlew.bat --no-daemon -q :app:printPocIdentity
-```
-
-POC artifact production fails before packaging when:
+POC APK production fails before packaging when:
 
 - `WLB_POC_BUILD_NUMBER` is missing, zero, malformed or above `999`;
 - any signing input is absent;
 - only part of the signing environment is supplied;
 - the configured keystore file does not exist.
 
-The gate is attached to the Android signing boundary and the supported `assemblePoc`, `bundlePoc`, `installPoc` and aggregate build paths. A sentinel missing key also prevents lower-level packaging from silently emitting a usable POC artifact without external signing configuration.
+The gate is attached to supported APK-producing entry points. A sentinel missing key also prevents lower-level APK packaging from silently emitting a usable POC artifact without external signing configuration.
 
 Failure messages name missing configuration fields but never print passwords.
 
-## Signature, identity and checksum verification
+## Verifying APK signature, identity and checksum
 
-Verify the APK before copying it:
+Locate the Android verification tools and inspect the APK:
 
 ```powershell
 $Sdk = "$env:LOCALAPPDATA\Android\Sdk"
@@ -198,6 +224,9 @@ $Aapt = Get-ChildItem "$Sdk\build-tools\*\aapt.exe" |
 $Apk = ".\app\build\outputs\apk\poc\app-poc.apk"
 
 $ApkCertOutput = & $ApkSigner.FullName verify --verbose --print-certs $Apk
+if ($LASTEXITCODE -ne 0) {
+  throw 'POC APK signature verification failed'
+}
 $ApkCertOutput
 
 $BadgingOutput = & $Aapt.FullName dump badging $Apk
@@ -210,7 +239,17 @@ $ApkHash = Get-FileHash $Apk -Algorithm SHA256
 $ApkHash
 ```
 
-The APK signer must also match the public certificate exported from the configured keystore. This comparison does not expose the private key. Current Android build-tools can label the same certificate line as `V2 Signer`, `V3 Signer` or another scheme-specific signer, so the parser intentionally does not require a literal `Signer #1` prefix:
+The APK signer must also match the public certificate exported from the configured keystore. This comparison does not expose the private key.
+
+Different Android build-tools versions can report either:
+
+```text
+Signer #1 certificate SHA-256 digest: ...
+V2 Signer: certificate SHA-256 digest: ...
+V3 Signer: certificate SHA-256 digest: ...
+```
+
+The parser therefore accepts both numbered and scheme-specific forms:
 
 ```powershell
 $ExportedCertificate = Join-Path $env:TEMP 'wlb-poc-signing-cert.der'
@@ -231,7 +270,7 @@ $ReportedSignerCountLine = $ApkCertOutput |
   Select-Object -First 1
 
 $ActualCertLines = $ApkCertOutput |
-  Select-String '^.*Signer:\s+certificate SHA-256 digest:\s*(\S+)$'
+  Select-String '^(?:Signer #\d+|.*Signer):?\s+certificate SHA-256 digest:\s*(\S+)$'
 
 if (-not $ReportedSignerCountLine) {
   throw 'apksigner did not report the APK signer count'
@@ -261,6 +300,29 @@ Remove-Item $ExportedCertificate -Force
 ```
 
 Record only the APK SHA-256, application version, Git commit and public signing-certificate SHA-256 in the live-test manifest. Never copy the keystore to the test machine.
+
+## Verifying release remains unsigned
+
+The ordinary `release` variant is intentionally not a production artifact yet. It must remain unsigned:
+
+```powershell
+.\gradlew.bat --no-daemon :app:assembleRelease
+
+$ReleaseApk = Get-ChildItem `
+  .\app\build\outputs\apk\release\*.apk |
+  Select-Object -First 1
+
+if (-not $ReleaseApk) {
+  throw 'Release APK was not produced'
+}
+
+& $ApkSigner.FullName verify $ReleaseApk.FullName
+if ($LASTEXITCODE -eq 0) {
+  throw 'Release APK unexpectedly contains a valid signing identity'
+}
+```
+
+Do not distribute the unsigned release APK. Live POC testing uses only the signed `poc` APK.
 
 ## Existing debug installation and device policy
 
@@ -340,16 +402,18 @@ The repository signing-material workflow:
 
 The Android quality workflow:
 
-1. proves that `assemblePoc`, `bundlePoc` and aggregate `build` fail closed without signing configuration and leave no final POC artifact;
+1. proves that `assemblePoc` and aggregate APK `build` fail closed without signing configuration and leave no final POC artifact;
 2. proves that a partial signing environment does not break `test`, `lintDebug` or `assembleDebug`;
-3. proves that the same partial environment is rejected for POC artifact production;
+3. proves that the same partial environment is rejected for POC APK production;
 4. proves that `WLB_POC_BUILD_NUMBER` does not leak into the normal debug identity;
-5. generates an ephemeral CI-only PKCS12 key;
-6. builds a synthetic signed POC APK from a complete environment configuration;
-7. requires exactly one APK signer and compares its certificate SHA-256 with the certificate exported from the generated CI key;
-8. verifies non-debuggable POC output;
-9. derives expected package/version identity from Gradle and compares it with the APK;
-10. builds a signed POC bundle through the ignored `keystore.properties` fallback;
-11. does not publish CI-only POC APK/AAB files as live artifacts.
+5. proves that the ordinary release APK remains unsigned;
+6. generates an ephemeral CI-only PKCS12 key;
+7. builds a synthetic signed POC APK from a complete environment configuration;
+8. requires exactly one APK signer and compares its certificate SHA-256 with the certificate exported from the generated CI key;
+9. verifies non-debuggable POC output;
+10. derives expected package/version identity from Gradle and compares it with the APK;
+11. builds and fully verifies a second numbered POC APK through the ignored `keystore.properties` fallback;
+12. proves that `bundlePoc` is explicitly unsupported and leaves no `.aab` artifact;
+13. does not publish CI-only POC APK files as live artifacts.
 
 The CI key is disposable and must never be used on a physical POC device.
