@@ -18,6 +18,8 @@ val pocBuildNumberRaw = System.getenv("WLB_POC_BUILD_NUMBER")
 val pocBuildNumber = pocBuildNumberRaw?.toIntOrNull()
 val configuredPocBuildNumber = pocBuildNumber?.takeIf { it in 1..999 } ?: 0
 val configuredPocVersionCode = baseVersionCode + configuredPocBuildNumber
+val pocAabUnsupportedMessage =
+    "POC AAB is not supported; build the signed POC APK with :app:assemblePoc"
 
 val signingPropertiesFile = rootProject.file("keystore.properties")
 val signingProperties = Properties().apply {
@@ -101,9 +103,17 @@ fun validatePocPackagingInputs() {
 
 val verifyPocSigningInputs = tasks.register("verifyPocSigningInputs") {
     group = "verification"
-    description = "Validates the external signing identity required for live POC artifacts."
+    description = "Validates the external signing identity required for live POC APKs."
     doLast {
         validatePocPackagingInputs()
+    }
+}
+
+val rejectPocBundle = tasks.register("rejectPocBundle") {
+    group = "verification"
+    description = "Rejects unsupported POC Android App Bundle production."
+    doLast {
+        throw GradleException(pocAabUnsupportedMessage)
     }
 }
 
@@ -164,7 +174,7 @@ android {
     }
 }
 
-// Only the POC variant receives the per-build live identity. Normal debug and
+// Only the POC APK receives the per-build live identity. Normal debug and
 // release outputs retain the stable base versionCode regardless of the POC env.
 androidComponents {
     onVariants(selector().withBuildType("poc")) { variant ->
@@ -174,21 +184,33 @@ androidComponents {
     }
 }
 
-// validateSigningPoc is the central AGP signing boundary used by APK/AAB packaging.
-// Public variant and aggregate lifecycle tasks are included as regression-safe fallbacks.
+// Supported APK-producing entry points must validate the external POC identity.
 tasks.matching {
     it.name in setOf(
-        "validateSigningPoc",
         "assemblePoc",
-        "bundlePoc",
         "installPoc",
         "packagePoc",
         "assemble",
-        "bundle",
         "build",
     )
 }.configureEach {
     dependsOn(verifyPocSigningInputs)
+}
+
+// POC delivery is APK-only. Replace the public bundle lifecycle dependency graph
+// and guard known AGP bundle-producing internals so no POC AAB can be emitted.
+tasks.matching { it.name == "bundlePoc" }.configureEach {
+    setDependsOn(listOf(rejectPocBundle))
+}
+
+tasks.matching {
+    it.name in setOf(
+        "buildPocPreBundle",
+        "packagePocBundle",
+        "signPocBundle",
+    )
+}.configureEach {
+    dependsOn(rejectPocBundle)
 }
 
 tasks.register("printBaseIdentity") {
@@ -203,7 +225,7 @@ tasks.register("printBaseIdentity") {
 
 tasks.register("printPocIdentity") {
     group = "help"
-    description = "Prints the expected package and version identity for a numbered POC build."
+    description = "Prints the expected package and version identity for a numbered POC APK."
     doLast {
         val buildNumber = requirePocBuildNumber()
         println("WLB_POC_APPLICATION_ID=$baseApplicationId")
