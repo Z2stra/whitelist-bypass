@@ -106,10 +106,9 @@ jobs:
               printf '%s failed for an unexpected reason\n' "$label"
               exit 1
             fi
-            if find app/build/outputs -type f \
-                \( -path '*/poc/*' -o -name '*-poc.apk' -o -name '*-poc.aab' \) \
-                -print -quit 2>/dev/null | grep -q .; then
-              printf '%s left a POC artifact after fail-closed validation\n' "$label"
+            if compgen -G 'app/build/outputs/apk/poc/*.apk' >/dev/null ||
+                compgen -G 'app/build/outputs/bundle/poc/*.aab' >/dev/null; then
+              printf '%s left a final POC APK/AAB after fail-closed validation\n' "$label"
               exit 1
             fi
           }
