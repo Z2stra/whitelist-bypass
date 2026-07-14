@@ -56,6 +56,9 @@ $RECYCLE.BIN/
 *.keystore
 *.p12
 *.pfx
+*.pkcs12
+*.ks
+*.bcfks
 *.pem
 *.key
 
