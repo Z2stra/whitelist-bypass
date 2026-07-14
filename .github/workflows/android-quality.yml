@@ -217,18 +217,23 @@ jobs:
 
           cert_output="$("$apksigner" verify --verbose --print-certs "$apk")"
           printf '%s\n' "$cert_output" | tee "$diagnostics/apksigner.txt"
+          reported_signer_count="$(sed -n 's/^Number of signers: //p' <<<"$cert_output" | tail -n 1)"
           mapfile -t signer_digests < <(
-            sed -n 's/^Signer #[0-9][0-9]* certificate SHA-256 digest: //p' <<<"$cert_output" |
+            sed -n 's/^.*Signer: certificate SHA-256 digest: //p' <<<"$cert_output" |
               sed 's/[[:space:]:]//g' |
-              tr '[:upper:]' '[:lower:]'
+              tr '[:upper:]' '[:lower:]' |
+              sort -u
           )
           {
             printf 'expected=%s\n' "$expected_cert_sha256"
-            printf 'signer_count=%s\n' "${#signer_digests[@]}"
+            printf 'reported_signer_count=%s\n' "$reported_signer_count"
+            printf 'unique_digest_count=%s\n' "${#signer_digests[@]}"
             printf 'actual=%s\n' "${signer_digests[*]:-}"
           } > "$diagnostics/signer-digests.txt"
 
-          if [[ ${#signer_digests[@]} -ne 1 || "${signer_digests[0]}" != "$expected_cert_sha256" ]]; then
+          if [[ "$reported_signer_count" != "1" ||
+                ${#signer_digests[@]} -ne 1 ||
+                "${signer_digests[0]}" != "$expected_cert_sha256" ]]; then
             echo "POC APK must have exactly one signer matching the generated CI POC key"
             exit 1
           fi
