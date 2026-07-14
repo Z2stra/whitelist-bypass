@@ -1,3 +1,12 @@
 node_modules/
 dist/
 .test-dist/
+coverage/
+
+.env
+.env.*
+!.env.example
+!.env.template
+
+*.log
+*.tsbuildinfo
