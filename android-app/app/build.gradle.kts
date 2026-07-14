@@ -90,7 +90,11 @@ android {
         applicationId = "bypass.whitelist"
         minSdk = 23
         targetSdk = 36
-        versionCode = 1_000_000 * versionMajor + 1_000 * versionMinor + versionPatch + versionBuild
+        versionCode =
+            versionMajor * 100_000_000 +
+                versionMinor * 1_000_000 +
+                versionPatch * 1_000 +
+                versionBuild
         versionName = "$versionMajor.$versionMinor.$versionPatch"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
