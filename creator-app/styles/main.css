@@ -573,6 +573,45 @@ body {
   color: #e0e0e0;
 }
 
+
+.protected-settings-status {
+  margin: -8px 0 18px;
+  padding: 10px 12px;
+  border: 1px solid #3b4c5f;
+  border-radius: 8px;
+  background: #18212a;
+  color: #b9d7f5;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.popup label.secret-clear-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -8px 0 16px;
+  color: #b0b0b0;
+  cursor: pointer;
+}
+
+.popup label.secret-clear-row input {
+  width: auto;
+  margin: 0;
+}
+
+.settings-note {
+  margin: -6px 0 18px;
+  color: #888;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.popup button:disabled,
+.popup input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .clear-cookies-row {
   display: flex;
   gap: 8px;

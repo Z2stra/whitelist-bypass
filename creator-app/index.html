@@ -10,7 +10,6 @@
     <div class="tab-add" data-action="add-tab" title="New tab">+</div>
   </div>
   <div class="tab-bar-actions">
-    <div class="tab-action-btn" id="btnExportCookies" title="Export all cookies to cookies.zip for headless mode">Export Cookies</div>
     <div class="tab-action-btn settings" id="btnSettings" title="Settings">Settings</div>
     <div class="tab-action-btn bot" id="tabBot">Bot: Off</div>
   </div>
@@ -81,9 +80,12 @@
 </div>
 <div class="popup-overlay" id="settingsPopup">
   <div class="popup">
+    <h2>Protected settings</h2>
+    <div class="protected-settings-status" id="protectedSettingsStatus"></div>
     <h2>VK bot settings</h2>
-    <label for="vkToken">Token</label>
-    <input type="text" id="vkToken" placeholder="vk1.a.xxx...">
+    <label for="vkToken">Community token</label>
+    <input type="password" id="vkToken" autocomplete="new-password" placeholder="vk1.a.xxx...">
+    <label class="secret-clear-row" for="clearVkToken"><input type="checkbox" id="clearVkToken"> Remove stored token</label>
     <label for="vkGroupId">Group ID</label>
     <input type="number" id="vkGroupId" placeholder="123456789">
     <label for="vkUserId">User IDs (comma-separated)</label>
@@ -92,9 +94,11 @@
     <label for="upstreamSocks">SOCKS5 host:port</label>
     <input type="text" id="upstreamSocks" placeholder="127.0.0.1:1080">
     <label for="upstreamUser">Username</label>
-    <input type="text" id="upstreamUser" placeholder="optional">
+    <input type="text" id="upstreamUser" autocomplete="off" placeholder="optional">
     <label for="upstreamPass">Password</label>
-    <input type="password" id="upstreamPass" placeholder="optional">
+    <input type="password" id="upstreamPass" autocomplete="new-password" placeholder="optional">
+    <label class="secret-clear-row" for="clearUpstreamCredentials"><input type="checkbox" id="clearUpstreamCredentials"> Remove stored proxy username and password</label>
+    <div class="settings-note">Leaving secret fields blank keeps their stored values. Entering either proxy credential replaces both fields.</div>
     <h2>Clear cookies</h2>
     <div class="clear-cookies-row">
       <button type="button" class="btn-clear-cookies" data-platform="vk">VK</button>

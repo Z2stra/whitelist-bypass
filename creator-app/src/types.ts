@@ -71,6 +71,53 @@ export interface UpstreamProxy {
   pass: string;
 }
 
+export type SecretValueUpdate =
+  | { action: 'keep' }
+  | { action: 'clear' }
+  | { action: 'replace'; value: string };
+
+export interface ProtectedSettingsUpdate {
+  bot: {
+    groupId: string;
+    userId: string;
+    token: SecretValueUpdate;
+  };
+  proxy: {
+    socks: string;
+    username: SecretValueUpdate;
+    password: SecretValueUpdate;
+  };
+}
+
+export interface LegacyPlaintextSettings {
+  hadLegacy: boolean;
+  botSettings?: BotSettings;
+  upstreamProxy?: UpstreamProxy;
+}
+
+export interface ProtectedSettingsView {
+  protection: {
+    available: boolean;
+    backend: string;
+    warning?: string;
+  };
+  bot: {
+    groupId: string;
+    userId: string;
+    tokenConfigured: boolean;
+  };
+  proxy: {
+    socks: string;
+    usernameConfigured: boolean;
+    passwordConfigured: boolean;
+  };
+}
+
+export interface BotStartResult {
+  success: boolean;
+  error?: string;
+}
+
 export interface TabConfig {
   mode: TunnelMode;
   peerId: number;
@@ -162,14 +209,15 @@ export interface Bridge {
   setTunnelMode(tabId: string, mode: string, platform?: string): Promise<void>;
   startRelay(tabId: string): Promise<void>;
   closeTab(tabId: string): Promise<void>;
-  startBot(settings: BotSettings): Promise<void>;
+  getProtectedSettings(): Promise<ProtectedSettingsView>;
+  saveProtectedSettings(update: ProtectedSettingsUpdate): Promise<ProtectedSettingsView>;
+  migrateLegacySettings(settings: LegacyPlaintextSettings): Promise<ProtectedSettingsView>;
+  startBot(): Promise<BotStartResult>;
   stopBot(): Promise<void>;
-  setUpstreamProxy(proxy: UpstreamProxy): Promise<void>;
   clearCookies(platform: string): Promise<number>;
   onCreateBotTab(cb: (data: BotTabData) => void): void;
   getCallCreatorCode(scriptFile: string): Promise<string>;
   onBotError(cb: (msg: string) => void): void;
-  exportCookiesZip(): Promise<Uint8Array>;
   startHeadless(tabId: string, platform: string, args: HeadlessStartArgs): Promise<void>;
   sendBotCallLink(tabId: string, link: string): Promise<void>;
   onCloseBotTab(cb: (data: { tabId: string }) => void): void;

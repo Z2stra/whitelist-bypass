@@ -290,6 +290,12 @@ export class BotManager {
     console.log('[BOT] Stopped');
   }
 
+  async stopAndWait(): Promise<void> {
+    const task = this.pollTask;
+    this.stop();
+    if (task) await task.catch(() => {});
+  }
+
   private async pollOnce(): Promise<LongPollData> {
     if (!this.server || !this.key || !this.ts) {
       throw new BotSecurityError('INVALID_STATE', 'VK Long Poll is not initialized');

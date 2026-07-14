@@ -75,3 +75,30 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
           path: creator-app/electron-smoke.log
+
+  protected-settings-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: creator-app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: creator-app
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        working-directory: creator-app
+        run: npm run build
+
+      - name: Windows DPAPI protected-settings smoke
+        working-directory: creator-app
+        run: npm run smoke:protected-storage

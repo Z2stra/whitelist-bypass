@@ -6,7 +6,7 @@ import { VkAutoclick } from '../autoclick/vk';
 import { TelemostAutoclick } from '../autoclick/telemost';
 import { SESSION_PARTITION, USER_AGENT, WINDOW_WIDTH, WINDOW_HEIGHT } from '../constants';
 import { Platform } from '../types';
-import { parseCallStatus, extractTaggedCallLink, parseWBDeviceId } from './util/log-tags';
+import { parseCallStatus, extractTaggedCallLink } from './util/log-tags';
 import { safeErrorMessage } from '../bot/security';
 import {
   REMOTE_WEBVIEW_PREFERENCES,
@@ -17,9 +17,17 @@ import {
   isLegacyHookUrl,
   isTrustedAppUrl,
 } from './trust-policy';
+import {
+  WB_DEVICE_ID_STORAGE_KEY,
+  isWBDeviceIdSourceUrl,
+  normalizeWBDeviceId,
+} from './wb-device-id';
 
 const APP_INDEX_PATH = path.join(__dirname, '..', '..', 'index.html');
 const APP_INDEX_URL = pathToFileURL(APP_INDEX_PATH).toString();
+const WB_DEVICE_ID_POLL_INTERVAL_MS = 1000;
+const WB_DEVICE_ID_READ_SCRIPT =
+  `window.localStorage.getItem(${JSON.stringify(WB_DEVICE_ID_STORAGE_KEY)})`;
 
 function relaxLegacyCspOnly(ses: Session): void {
   ses.webRequest.onHeadersReceived((details, callback) => {
@@ -167,19 +175,40 @@ export function createWindow(tabManager: TabManager): BrowserWindow {
   });
 
   const autoclickers = new Map<number, { telemost: TelemostAutoclick; vk: VkAutoclick }>();
+  const wbDeviceIdPollers = new Map<number, ReturnType<typeof setInterval>>();
+  const wbDeviceIdReads = new Set<number>();
 
-  const wbDeviceIdHook = `(function(){
+  const stopWBDeviceIdPolling = (contentsId: number): void => {
+    const timer = wbDeviceIdPollers.get(contentsId);
+    if (timer) clearInterval(timer);
+    wbDeviceIdPollers.delete(contentsId);
+  };
+
+  const captureWBDeviceId = async (contents: WebContents): Promise<void> => {
+    if (contents.isDestroyed() || !isWBDeviceIdSourceUrl(contents.getURL())) return;
+    if (wbDeviceIdReads.has(contents.id)) return;
+    wbDeviceIdReads.add(contents.id);
     try {
-      var key = 'wb_auth_api_device_id';
-      var existing = localStorage.getItem(key);
-      if (existing) console.log('[WB_DEVICE_ID]', existing);
-      var orig = Storage.prototype.setItem;
-      Storage.prototype.setItem = function(k, v) {
-        if (k === key) console.log('[WB_DEVICE_ID]', v);
-        return orig.apply(this, arguments);
-      };
-    } catch (e) {}
-  })();`;
+      const value = await contents.executeJavaScript(WB_DEVICE_ID_READ_SCRIPT, true);
+      if (!isWBDeviceIdSourceUrl(contents.getURL())) return;
+      const deviceId = normalizeWBDeviceId(value);
+      if (deviceId) await tabManager.setWBStreamDeviceId(deviceId);
+    } catch {
+      // The page can navigate or be destroyed between the origin check and the read.
+    } finally {
+      wbDeviceIdReads.delete(contents.id);
+    }
+  };
+
+  const syncWBDeviceIdPolling = (contents: WebContents): void => {
+    stopWBDeviceIdPolling(contents.id);
+    if (contents.isDestroyed() || !isWBDeviceIdSourceUrl(contents.getURL())) return;
+    void captureWBDeviceId(contents);
+    const timer = setInterval(() => {
+      void captureWBDeviceId(contents);
+    }, WB_DEVICE_ID_POLL_INTERVAL_MS);
+    wbDeviceIdPollers.set(contents.id, timer);
+  };
 
   win.webContents.on('did-attach-webview', (_event, wvContents) => {
     if (!isAllowedRemoteUrl(wvContents.getURL())) {
@@ -196,14 +225,12 @@ export function createWindow(tabManager: TabManager): BrowserWindow {
     }
 
     wvContents.on('dom-ready', () => {
-      const url = wvContents.getURL();
-      if (url.includes('stream.wb.ru')) {
-        wvContents.executeJavaScript(wbDeviceIdHook, true).catch(() => {});
-      }
+      syncWBDeviceIdPolling(wvContents);
     });
 
     wvContents.on('did-navigate', (_navigateEvent, url) => {
       if (!isAllowedRemoteUrl(url)) return;
+      syncWBDeviceIdPolling(wvContents);
       const wcId = wvContents.id;
       if (!autoclickers.has(wcId)) {
         autoclickers.set(wcId, {
@@ -224,6 +251,10 @@ export function createWindow(tabManager: TabManager): BrowserWindow {
       }
     });
 
+    wvContents.on('did-navigate-in-page', () => {
+      syncWBDeviceIdPolling(wvContents);
+    });
+
     wvContents.on('console-message', (_consoleEvent, _level, msg) => {
       if (msg.includes('state: disconnected') || msg.includes('state: failed')) {
         const ac = autoclickers.get(wvContents.id);
@@ -233,11 +264,6 @@ export function createWindow(tabManager: TabManager): BrowserWindow {
       handleBotCallLink(tabManager, msg, Platform.VK);
       handleBotCallLink(tabManager, msg, Platform.Telemost);
 
-      const deviceId = parseWBDeviceId(msg);
-      if (deviceId) {
-        tabManager.setWBStreamDeviceId(deviceId).catch(() => {});
-      }
-
       const callStatus = parseCallStatus(msg);
       if (callStatus) {
         console.log('[MAIN] Cached call status update');
@@ -246,6 +272,8 @@ export function createWindow(tabManager: TabManager): BrowserWindow {
     });
 
     wvContents.on('destroyed', () => {
+      stopWBDeviceIdPolling(wvContents.id);
+      wbDeviceIdReads.delete(wvContents.id);
       const ac = autoclickers.get(wvContents.id);
       if (ac) {
         ac.telemost.stop();
@@ -266,9 +294,7 @@ function handleBotCallLink(tabManager: TabManager, msg: string, platform: Platfo
     console.log(`[MAIN] ${platform} call link captured without an associated peer`);
     return;
   }
-  if (tabManager.botManager) {
-    tabManager.botManager
-      .sendMessage(tab.peerId, tagged.link)
-      .catch((error) => console.error(safeErrorMessage(error, 'Legacy bot link delivery')));
-  }
+  void tabManager
+    .sendBotCallLink(tagged.tabId, tagged.link)
+    .catch((error) => console.error(safeErrorMessage(error, 'Legacy bot link delivery')));
 }

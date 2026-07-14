@@ -9,7 +9,7 @@
 - Android client: existing `android-app` using `VpnService` and the headless Go/Pion path.
 - The unmodified Windows Creator and Android debug APK have been built and smoke-tested locally on Windows.
 - Android baseline CI now passes `test`, `lintDebug`, and `assembleDebug`; 69 non-blocking lint warnings remain classified as technical debt.
-- Creator CI now passes TypeScript build, static type-check, unit/regression tests and an Electron renderer-isolation smoke test on Node.js 22.
+- Creator CI now covers TypeScript build, static type-check, unit/regression tests, Electron renderer isolation and a Windows DPAPI protected-settings smoke on Node.js 22.
 - No production credentials, tokens, cookies, proxy passwords or signing keys belong in Git or public CI.
 
 ## Mandatory architecture gate
@@ -50,7 +50,12 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [x] Restrict the POC handler to `WLB-POC/1` PING/PONG; operational join/start/close commands remain disabled in POC mode.
 - [x] Validate Electron IPC senders and runtime arguments.
 - [x] Remove Node privileges from remote web content and restrict navigation, redirects, popups and permissions to explicit platform origins.
-- [ ] Move long-lived secrets out of renderer `localStorage`; document remaining cookie-storage risk.
+- [x] Move long-lived secrets out of renderer `localStorage`; document remaining cookie-storage risk.
+- [x] Keep headless login waits cancellable and outside the credential lifecycle lock; serialize only the final process spawn/secret-consumption phase.
+- [x] Make tab close cancel pending starts, wait for child exit and verify ephemeral cookie cleanup.
+- [x] Serialize bot result delivery with credential rotation, including the legacy webview result path.
+- [x] Validate legacy migration before stopping consumers and block bot start while plaintext remnants remain.
+- [x] Capture the WB device ID in the main process without printing it into the remote webview console.
 
 ### Phase 1 — official VK API PING/PONG POC
 
@@ -66,7 +71,7 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 ### Phase 2 — production security foundation
 
 - [x] Complete the Electron IPC and remote-content trust-boundary hardening milestone.
-- [ ] Introduce OS-protected secret storage without exposing secrets to the renderer.
+- [x] Introduce OS-protected secret storage without exposing stored secrets to the renderer.
 - [ ] Define replay windows, counters, expiry, rate limits and audit-safe event logging.
 - [ ] Complete Android backup exclusions and token/log review.
 
@@ -118,4 +123,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: Phase 0 documentation is established. Android baseline checks are green. VK transport hardening, typed headless process events, IPC sender/argument validation and remote-webview isolation are implemented and covered by Creator CI. The Creator POC-only `WLB-POC/1` PING/PONG handler is implemented and isolated from operational commands. The pre-POC security gate remains open because protected main-process secret storage and cookie persistence/export review are not complete. Official VK API POC has not started. Real credentials must not be entered yet.**
+**Current status: Phase 0 documentation is established. Android baseline checks are green. VK transport hardening, typed headless process events, IPC sender/argument validation, remote-webview isolation, the POC-only `WLB-POC/1` handler and main-process OS-protected settings are implemented. Creator is single-instance; settings replacement cancels pending login starts and waits for active secret consumers to exit; tab close waits for process and temporary-cookie cleanup; bot result delivery is serialized with credential rotation; newer store formats are preserved; raw cookie export is removed; WB device IDs are captured without remote-console disclosure; and bot startup is blocked while legacy plaintext remains. PR #8 is eligible to leave Draft only after the latest head has green CI and its final manual race/security review is recorded; merge remains user-controlled. After merge, a local Windows upgrade/migration smoke is mandatory before real credentials are introduced. The official VK API POC has not started.**
