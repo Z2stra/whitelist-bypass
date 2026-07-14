@@ -64,11 +64,10 @@ fun validatePocPackagingInputs() {
 }
 
 fun isPocPackagingTask(taskName: String): Boolean {
-    val name = taskName.substringAfterLast(':')
-    return name.contains("Poc", ignoreCase = true) &&
-        listOf("assemble", "bundle", "install", "package").any {
-            name.startsWith(it, ignoreCase = true)
-        }
+    return when (taskName.substringAfterLast(':').lowercase()) {
+        "assemblepoc", "bundlepoc", "installpoc", "packagepoc" -> true
+        else -> false
+    }
 }
 
 if (gradle.startParameter.taskNames.any(::isPocPackagingTask)) {
