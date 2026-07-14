@@ -162,7 +162,7 @@ android {
 }
 
 // validateSigningPoc is the central AGP signing boundary used by APK/AAB packaging.
-// Public lifecycle tasks are included as an explicit regression-safe fallback.
+// Public variant and aggregate lifecycle tasks are included as regression-safe fallbacks.
 tasks.matching {
     it.name in setOf(
         "validateSigningPoc",
@@ -170,6 +170,9 @@ tasks.matching {
         "bundlePoc",
         "installPoc",
         "packagePoc",
+        "assemble",
+        "bundle",
+        "build",
     )
 }.configureEach {
     dependsOn(verifyPocSigningInputs)
