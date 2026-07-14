@@ -184,9 +184,11 @@ androidComponents {
     }
 }
 
-// Supported APK-producing entry points must validate the external POC identity.
+// Supported APK-producing entry points and the AGP signing boundary must validate
+// the external POC identity before the sentinel signing configuration is read.
 tasks.matching {
     it.name in setOf(
+        "validateSigningPoc",
         "assemblePoc",
         "installPoc",
         "packagePoc",
