@@ -3,12 +3,14 @@ name: Android quality
 on:
   pull_request:
     paths:
+      - ".gitignore"
       - "android-app/**"
       - ".github/workflows/android-quality.yml"
   push:
     branches:
       - "agent/**"
     paths:
+      - ".gitignore"
       - "android-app/**"
       - ".github/workflows/android-quality.yml"
   workflow_dispatch:
@@ -23,7 +25,7 @@ concurrency:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
@@ -54,6 +56,64 @@ jobs:
         working-directory: android-app
         run: chmod +x gradlew
 
+      - name: Verify private signing material is not tracked
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked="$({
+            git ls-files | grep -Ei \
+              '(^|/)(keystore|signing|vkid|vk-poc)\.properties$|\.(jks|keystore|p12|pfx|pem|key)$'
+          } || true)"
+          if [[ -n "$tracked" ]]; then
+            echo "Private signing material must not be tracked:"
+            printf '%s\n' "$tracked"
+            exit 1
+          fi
+
+      - name: Verify POC packaging fails closed without a key
+        working-directory: android-app
+        shell: bash
+        env:
+          BUILD_NUMBER: "1"
+        run: |
+          set +e
+          output="$(./gradlew --no-daemon :app:assemblePoc 2>&1)"
+          status=$?
+          set -e
+          if [[ $status -eq 0 ]]; then
+            echo "assemblePoc unexpectedly succeeded without external signing configuration"
+            exit 1
+          fi
+          if ! grep -Fq "POC signing is not configured" <<<"$output"; then
+            printf '%s\n' "$output"
+            echo "assemblePoc failed for an unexpected reason"
+            exit 1
+          fi
+
+      - name: Generate an ephemeral CI-only POC signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/wlb-ci-poc.keystore"
+          password="ci-only-poc-password"
+          keytool -genkeypair \
+            -noprompt \
+            -storetype PKCS12 \
+            -keystore "$keystore" \
+            -storepass "$password" \
+            -keypass "$password" \
+            -alias wlb-ci-poc \
+            -keyalg RSA \
+            -keysize 3072 \
+            -validity 2 \
+            -dname "CN=CI POC, OU=Ephemeral, O=Whitelist Bypass, L=Test, ST=Test, C=US"
+          {
+            echo "WLB_POC_KEYSTORE_PATH=$keystore"
+            echo "WLB_POC_KEYSTORE_PASSWORD=$password"
+            echo "WLB_POC_KEY_ALIAS=wlb-ci-poc"
+            echo "WLB_POC_KEY_PASSWORD=$password"
+          } >> "$GITHUB_ENV"
+
       - name: Unit tests
         working-directory: android-app
         run: ./gradlew --no-daemon test
@@ -68,7 +128,25 @@ jobs:
         working-directory: android-app
         run: ./gradlew --no-daemon assembleDebug
 
-      - name: Upload Android reports and APK
+      - name: Assemble signed CI-only POC APK
+        working-directory: android-app
+        env:
+          BUILD_NUMBER: "1"
+        run: ./gradlew --no-daemon :app:assemblePoc
+
+      - name: Verify CI-only POC APK signature
+        working-directory: android-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          if [[ -z "$apksigner" ]]; then
+            echo "apksigner was not found"
+            exit 1
+          fi
+          "$apksigner" verify --verbose app/build/outputs/apk/poc/app-poc.apk
+
+      - name: Upload Android reports and debug APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
