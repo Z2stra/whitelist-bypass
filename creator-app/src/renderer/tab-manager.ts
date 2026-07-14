@@ -93,8 +93,13 @@ export class RendererTabManager {
     this.onRender();
   }
 
+  private hasPendingLegacyPlaintext(): boolean {
+    return collectLegacyPlaintextSettings(localStorage).hadLegacy;
+  }
+
   hasBotConfiguration(): boolean {
     return (
+      !this.hasPendingLegacyPlaintext() &&
       this.settingsView.protection.available &&
       this.settingsView.bot.tokenConfigured &&
       this.settingsView.bot.groupId.length > 0 &&
@@ -201,7 +206,7 @@ export class RendererTabManager {
     const tab = this.tabs[tabId];
     if (tab?.wv) tab.wv.remove();
     if (tab?.loginWebview) tab.loginWebview.remove();
-    window.bridge.closeTab(tabId);
+    void window.bridge.closeTab(tabId).catch(() => {});
     delete this.tabs[tabId];
     if (this.activeTabId === tabId) {
       const ids = Object.keys(this.tabs);
@@ -304,6 +309,10 @@ export class RendererTabManager {
   }
 
   async autoStartBot(): Promise<void> {
+    if (this.hasPendingLegacyPlaintext()) {
+      localStorage.setItem('botEnabled', 'false');
+      return;
+    }
     if (localStorage.getItem('botEnabled') !== 'true') return;
     if (!this.hasBotConfiguration()) {
       localStorage.setItem('botEnabled', 'false');
