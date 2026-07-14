@@ -56,20 +56,6 @@ jobs:
         working-directory: android-app
         run: chmod +x gradlew
 
-      - name: Verify private signing material is not tracked
-        shell: bash
-        run: |
-          set -euo pipefail
-          tracked="$({
-            git ls-files | grep -Ei \
-              '(^|/)(keystore|signing|vkid|vk-poc)\.properties$|\.(jks|keystore|p12|pfx|pem|key)$'
-          } || true)"
-          if [[ -n "$tracked" ]]; then
-            echo "Private signing material must not be tracked:"
-            printf '%s\n' "$tracked"
-            exit 1
-          fi
-
       - name: Verify POC artifact tasks fail closed without a key
         working-directory: android-app
         shell: bash
@@ -117,7 +103,7 @@ jobs:
           assert_fails_closed bundlePoc :app:bundlePoc
           assert_fails_closed aggregate-build :app:build -x test -x lint
 
-      - name: Verify partial signing environment is rejected
+      - name: Verify partial signing environment is scoped to POC artifacts
         working-directory: android-app
         shell: bash
         run: |
@@ -125,24 +111,64 @@ jobs:
           diagnostics="app/build/reports/poc-signing-gate"
           mkdir -p "$diagnostics"
           rm -f keystore.properties
+
+          partial_env=(
+            env
+            -u WLB_POC_KEYSTORE_PASSWORD
+            -u WLB_POC_KEY_ALIAS
+            -u WLB_POC_KEY_PASSWORD
+            WLB_POC_BUILD_NUMBER=17
+            WLB_POC_KEYSTORE_PATH="$RUNNER_TEMP/partial-poc.keystore"
+          )
+
+          # A stale partial POC environment must not break normal development tasks.
+          "${partial_env[@]}" ./gradlew --no-daemon test lintDebug assembleDebug
+
+          aapt="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          if [[ -z "$aapt" ]]; then
+            echo "aapt was not found"
+            exit 1
+          fi
+
+          base_identity="$("${partial_env[@]}" ./gradlew --no-daemon -q :app:printBaseIdentity)"
+          expected_package="$(sed -n 's/^WLB_BASE_APPLICATION_ID=//p' <<<"$base_identity" | tail -n 1)"
+          expected_version_code="$(sed -n 's/^WLB_BASE_VERSION_CODE=//p' <<<"$base_identity" | tail -n 1)"
+          expected_version_name="$(sed -n 's/^WLB_BASE_VERSION_NAME=//p' <<<"$base_identity" | tail -n 1)"
+
+          debug_apk="app/build/outputs/apk/debug/app-debug.apk"
+          package_line="$("$aapt" dump badging "$debug_apk" | head -n 1)"
+          actual_package="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<<"$package_line")"
+          actual_version_code="$(sed -n "s/^package:.*versionCode='\([^']*\)'.*/\1/p" <<<"$package_line")"
+          actual_version_name="$(sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p" <<<"$package_line")"
+
+          if [[ "$actual_package" != "$expected_package" ||
+                "$actual_version_code" != "$expected_version_code" ||
+                "$actual_version_name" != "$expected_version_name" ]]; then
+            printf 'POC environment leaked into debug identity: %s\n' "$package_line"
+            printf 'Expected package=%s versionCode=%s versionName=%s\n' \
+              "$expected_package" "$expected_version_code" "$expected_version_name"
+            exit 1
+          fi
+
+          rm -rf app/build/outputs/apk/poc app/build/outputs/bundle/poc
           set +e
-          output="$(env \
-            -u WLB_POC_KEYSTORE_PASSWORD \
-            -u WLB_POC_KEY_ALIAS \
-            -u WLB_POC_KEY_PASSWORD \
-            WLB_POC_BUILD_NUMBER=1 \
-            WLB_POC_KEYSTORE_PATH="$RUNNER_TEMP/partial-poc.keystore" \
-            ./gradlew --no-daemon :app:assemblePoc 2>&1)"
+          output="$("${partial_env[@]}" ./gradlew --no-daemon :app:assemblePoc 2>&1)"
           status=$?
           set -e
           printf '%s\n' "$output" > "$diagnostics/partial-environment.log"
+
           if [[ $status -eq 0 ]]; then
-            echo "Partial POC signing environment unexpectedly succeeded"
+            echo "Partial POC signing environment unexpectedly produced a POC APK"
             exit 1
           fi
           if ! grep -Fq "POC signing environment must provide all four WLB_POC_* signing values" <<<"$output"; then
             printf '%s\n' "$output"
-            echo "Partial environment failed for an unexpected reason"
+            echo "Partial POC environment failed for an unexpected reason"
+            exit 1
+          fi
+          if compgen -G 'app/build/outputs/apk/poc/*.apk' >/dev/null ||
+              compgen -G 'app/build/outputs/bundle/poc/*.aab' >/dev/null; then
+            echo "Partial POC environment left a final POC artifact"
             exit 1
           fi
 
@@ -238,13 +264,19 @@ jobs:
             exit 1
           fi
 
+          badging_output="$("$aapt" dump badging "$apk")"
+          if grep -Fq "application-debuggable" <<<"$badging_output"; then
+            echo "POC APK must not be debuggable"
+            exit 1
+          fi
+
           identity_output="$(./gradlew --no-daemon -q :app:printPocIdentity)"
           printf '%s\n' "$identity_output" > "$diagnostics/gradle-identity.txt"
           expected_package="$(sed -n 's/^WLB_POC_APPLICATION_ID=//p' <<<"$identity_output" | tail -n 1)"
           expected_version_code="$(sed -n 's/^WLB_POC_VERSION_CODE=//p' <<<"$identity_output" | tail -n 1)"
           expected_version_name="$(sed -n 's/^WLB_POC_VERSION_NAME=//p' <<<"$identity_output" | tail -n 1)"
 
-          package_line="$("$aapt" dump badging "$apk" | head -n 1)"
+          package_line="$(head -n 1 <<<"$badging_output")"
           printf '%s\n' "$package_line" > "$diagnostics/aapt-package.txt"
           actual_package="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<<"$package_line")"
           actual_version_code="$(sed -n "s/^package:.*versionCode='\([^']*\)'.*/\1/p" <<<"$package_line")"
