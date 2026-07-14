@@ -25,7 +25,7 @@ concurrency:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
 
     steps:
       - name: Checkout
@@ -70,23 +70,73 @@ jobs:
             exit 1
           fi
 
-      - name: Verify POC packaging fails closed without a key
+      - name: Verify POC artifact tasks fail closed without a key
         working-directory: android-app
         shell: bash
-        env:
-          BUILD_NUMBER: "1"
         run: |
+          set -euo pipefail
+
+          assert_fails_closed() {
+            local label="$1"
+            shift
+            rm -f keystore.properties
+            rm -rf app/build/outputs/apk/poc app/build/outputs/bundle/poc
+
+            set +e
+            output="$(env \
+              -u WLB_POC_KEYSTORE_PATH \
+              -u WLB_POC_KEYSTORE_PASSWORD \
+              -u WLB_POC_KEY_ALIAS \
+              -u WLB_POC_KEY_PASSWORD \
+              WLB_POC_BUILD_NUMBER=1 \
+              ./gradlew --no-daemon "$@" 2>&1)"
+            status=$?
+            set -e
+
+            if [[ $status -eq 0 ]]; then
+              printf '%s unexpectedly succeeded without external signing configuration\n' "$label"
+              exit 1
+            fi
+            if ! grep -Fq "POC signing is not configured" <<<"$output"; then
+              printf '%s\n' "$output"
+              printf '%s failed for an unexpected reason\n' "$label"
+              exit 1
+            fi
+            if find app/build/outputs -type f \
+                \( -path '*/poc/*' -o -name '*-poc.apk' -o -name '*-poc.aab' \) \
+                -print -quit 2>/dev/null | grep -q .; then
+              printf '%s left a POC artifact after fail-closed validation\n' "$label"
+              exit 1
+            fi
+          }
+
+          assert_fails_closed assemblePoc :app:assemblePoc
+          assert_fails_closed bundlePoc :app:bundlePoc
+          assert_fails_closed aggregate-build :app:build -x test -x lint
+
+      - name: Verify partial signing environment is rejected
+        working-directory: android-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f keystore.properties
           set +e
-          output="$(./gradlew --no-daemon :app:assemblePoc 2>&1)"
+          output="$(env \
+            -u WLB_POC_KEYSTORE_PASSWORD \
+            -u WLB_POC_KEY_ALIAS \
+            -u WLB_POC_KEY_PASSWORD \
+            WLB_POC_BUILD_NUMBER=1 \
+            WLB_POC_KEYSTORE_PATH="$RUNNER_TEMP/partial-poc.keystore" \
+            ./gradlew --no-daemon :app:assemblePoc 2>&1)"
           status=$?
           set -e
           if [[ $status -eq 0 ]]; then
-            echo "assemblePoc unexpectedly succeeded without external signing configuration"
+            echo "Partial POC signing environment unexpectedly succeeded"
             exit 1
           fi
-          if ! grep -Fq "POC signing is not configured" <<<"$output"; then
+          if ! grep -Fq "POC signing environment must provide all four WLB_POC_* signing values" <<<"$output"; then
             printf '%s\n' "$output"
-            echo "assemblePoc failed for an unexpected reason"
+            echo "Partial environment failed for an unexpected reason"
             exit 1
           fi
 
@@ -94,25 +144,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          keystore="$RUNNER_TEMP/wlb-ci-poc.keystore"
-          password="ci-only-poc-password"
           keytool -genkeypair \
             -noprompt \
             -storetype PKCS12 \
-            -keystore "$keystore" \
-            -storepass "$password" \
-            -keypass "$password" \
+            -keystore "$RUNNER_TEMP/wlb-ci-poc.keystore" \
+            -storepass "ci-only-poc-password" \
+            -keypass "ci-only-poc-password" \
             -alias wlb-ci-poc \
             -keyalg RSA \
             -keysize 3072 \
             -validity 2 \
             -dname "CN=CI POC, OU=Ephemeral, O=Whitelist Bypass, L=Test, ST=Test, C=US"
-          {
-            echo "WLB_POC_KEYSTORE_PATH=$keystore"
-            echo "WLB_POC_KEYSTORE_PASSWORD=$password"
-            echo "WLB_POC_KEY_ALIAS=wlb-ci-poc"
-            echo "WLB_POC_KEY_PASSWORD=$password"
-          } >> "$GITHUB_ENV"
 
       - name: Unit tests
         working-directory: android-app
@@ -128,15 +170,25 @@ jobs:
         working-directory: android-app
         run: ./gradlew --no-daemon assembleDebug
 
-      - name: Assemble signed CI-only POC APK
+      - name: Assemble signed CI-only POC APK from environment
         working-directory: android-app
         env:
-          BUILD_NUMBER: "1"
+          WLB_POC_BUILD_NUMBER: "1"
+          WLB_POC_KEYSTORE_PATH: ${{ runner.temp }}/wlb-ci-poc.keystore
+          WLB_POC_KEYSTORE_PASSWORD: ci-only-poc-password
+          WLB_POC_KEY_ALIAS: wlb-ci-poc
+          WLB_POC_KEY_PASSWORD: ci-only-poc-password
         run: ./gradlew --no-daemon :app:assemblePoc
 
-      - name: Verify CI-only POC APK signature and identity
+      - name: Verify POC APK signer certificate and identity
         working-directory: android-app
         shell: bash
+        env:
+          WLB_POC_BUILD_NUMBER: "1"
+          WLB_POC_KEYSTORE_PATH: ${{ runner.temp }}/wlb-ci-poc.keystore
+          WLB_POC_KEYSTORE_PASSWORD: ci-only-poc-password
+          WLB_POC_KEY_ALIAS: wlb-ci-poc
+          WLB_POC_KEY_PASSWORD: ci-only-poc-password
         run: |
           set -euo pipefail
           apk="app/build/outputs/apk/poc/app-poc.apk"
@@ -147,14 +199,65 @@ jobs:
             exit 1
           fi
 
-          "$apksigner" verify --verbose "$apk"
+          keytool -exportcert \
+            -storetype PKCS12 \
+            -keystore "$WLB_POC_KEYSTORE_PATH" \
+            -storepass "$WLB_POC_KEYSTORE_PASSWORD" \
+            -alias "$WLB_POC_KEY_ALIAS" \
+            -file "$RUNNER_TEMP/wlb-ci-poc.cer"
+          expected_cert_sha256="$(sha256sum "$RUNNER_TEMP/wlb-ci-poc.cer" | awk '{print tolower($1)}')"
 
-          package_line="$("$aapt" dump badging "$apk" | head -n 1)"
-          expected="package: name='bypass.whitelist' versionCode='3007001' versionName='0.3.7-poc.1'"
-          if [[ "$package_line" != *"$expected"* ]]; then
-            printf 'Unexpected APK identity: %s\n' "$package_line"
+          cert_output="$("$apksigner" verify --verbose --print-certs "$apk")"
+          printf '%s\n' "$cert_output"
+          actual_cert_sha256="$(
+            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<<"$cert_output" |
+              head -n 1 |
+              tr -d '[:space:]' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          if [[ -z "$actual_cert_sha256" || "$actual_cert_sha256" != "$expected_cert_sha256" ]]; then
+            echo "POC APK signer certificate does not match the generated CI POC key"
             exit 1
           fi
+
+          identity_output="$(./gradlew --no-daemon -q :app:printPocIdentity)"
+          expected_package="$(sed -n 's/^WLB_POC_APPLICATION_ID=//p' <<<"$identity_output" | tail -n 1)"
+          expected_version_code="$(sed -n 's/^WLB_POC_VERSION_CODE=//p' <<<"$identity_output" | tail -n 1)"
+          expected_version_name="$(sed -n 's/^WLB_POC_VERSION_NAME=//p' <<<"$identity_output" | tail -n 1)"
+
+          package_line="$("$aapt" dump badging "$apk" | head -n 1)"
+          actual_package="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<<"$package_line")"
+          actual_version_code="$(sed -n "s/^package:.*versionCode='\([^']*\)'.*/\1/p" <<<"$package_line")"
+          actual_version_name="$(sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p" <<<"$package_line")"
+
+          if [[ "$actual_package" != "$expected_package" ||
+                "$actual_version_code" != "$expected_version_code" ||
+                "$actual_version_name" != "$expected_version_name" ]]; then
+            printf 'Unexpected APK identity: %s\n' "$package_line"
+            printf 'Expected package=%s versionCode=%s versionName=%s\n' \
+              "$expected_package" "$expected_version_code" "$expected_version_name"
+            exit 1
+          fi
+
+      - name: Verify keystore.properties fallback with signed POC bundle
+        working-directory: android-app
+        shell: bash
+        env:
+          WLB_POC_BUILD_NUMBER: "2"
+        run: |
+          set -euo pipefail
+          trap 'rm -f keystore.properties' EXIT
+          cat > keystore.properties <<EOF
+          wlb.poc.storeFile=${{ runner.temp }}/wlb-ci-poc.keystore
+          wlb.poc.storePassword=ci-only-poc-password
+          wlb.poc.keyAlias=wlb-ci-poc
+          wlb.poc.keyPassword=ci-only-poc-password
+          EOF
+
+          ./gradlew --no-daemon :app:bundlePoc
+          bundle="app/build/outputs/bundle/poc/app-poc.aab"
+          test -f "$bundle"
+          jarsigner -verify "$bundle" | grep -Fq "jar verified"
 
       - name: Upload Android reports and debug APK
         if: always()
