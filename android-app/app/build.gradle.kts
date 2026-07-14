@@ -18,7 +18,7 @@ if (versionBuildRaw != null && (versionBuildRaw.toIntOrNull() == null || version
 val signingPropertiesFile = rootProject.file("keystore.properties")
 val signingProperties = Properties().apply {
     if (signingPropertiesFile.isFile) {
-        signingPropertiesFile.inputStream().use(::load)
+        signingPropertiesFile.inputStream().use { load(it) }
     }
 }
 
