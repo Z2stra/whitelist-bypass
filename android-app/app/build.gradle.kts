@@ -10,14 +10,14 @@ val versionMinor = 3
 val versionPatch = 7
 val baseApplicationId = "bypass.whitelist"
 val baseVersionName = "$versionMajor.$versionMinor.$versionPatch"
+val baseVersionCode =
+    versionMajor * 100_000_000 +
+        versionMinor * 1_000_000 +
+        versionPatch * 1_000
 val pocBuildNumberRaw = System.getenv("WLB_POC_BUILD_NUMBER")
 val pocBuildNumber = pocBuildNumberRaw?.toIntOrNull()
 val configuredPocBuildNumber = pocBuildNumber?.takeIf { it in 1..999 } ?: 0
-val configuredVersionCode =
-    versionMajor * 100_000_000 +
-        versionMinor * 1_000_000 +
-        versionPatch * 1_000 +
-        configuredPocBuildNumber
+val configuredPocVersionCode = baseVersionCode + configuredPocBuildNumber
 
 val signingPropertiesFile = rootProject.file("keystore.properties")
 val signingProperties = Properties().apply {
@@ -41,27 +41,23 @@ val environmentSigningValues = linkedMapOf(
 val anyEnvironmentSigningValue = environmentSigningValues.values.any { !it.isNullOrEmpty() }
 val allEnvironmentSigningValues = environmentSigningValues.values.all { !it.isNullOrEmpty() }
 
-if (anyEnvironmentSigningValue && !allEnvironmentSigningValues) {
-    throw GradleException(
-        "POC signing environment must provide all four WLB_POC_* signing values; " +
-            "partial environment configuration cannot be mixed with keystore.properties",
-    )
-}
-
 val propertySigningValues = linkedMapOf(
     "storeFile" to nonEmptyPropertyValue("wlb.poc.storeFile"),
     "storePassword" to nonEmptyPropertyValue("wlb.poc.storePassword"),
     "keyAlias" to nonEmptyPropertyValue("wlb.poc.keyAlias"),
     "keyPassword" to nonEmptyPropertyValue("wlb.poc.keyPassword"),
 )
+
+// Environment configuration is selected as one indivisible source whenever any
+// WLB_POC_* signing value is present. Missing environment values are never filled
+// from keystore.properties; the POC artifact gate reports the partial source.
 val selectedSigningValues =
-    if (allEnvironmentSigningValues) environmentSigningValues else propertySigningValues
+    if (anyEnvironmentSigningValue) environmentSigningValues else propertySigningValues
 
 val pocStorePath = selectedSigningValues.getValue("storeFile")
 val pocStorePassword = selectedSigningValues.getValue("storePassword")
 val pocKeyAlias = selectedSigningValues.getValue("keyAlias")
 val pocKeyPassword = selectedSigningValues.getValue("keyPassword")
-val pocSigningValuesPresent = selectedSigningValues.values.all { !it.isNullOrEmpty() }
 val pocStoreFile = pocStorePath?.let(rootProject::file)
 val missingPocStoreFile = layout.buildDirectory.file("missing-poc-signing-key.p12").get().asFile
 
@@ -78,6 +74,13 @@ fun requirePocBuildNumber(): Int {
 
 fun validatePocPackagingInputs() {
     requirePocBuildNumber()
+
+    if (anyEnvironmentSigningValue && !allEnvironmentSigningValues) {
+        throw GradleException(
+            "POC signing environment must provide all four WLB_POC_* signing values; " +
+                "partial environment configuration cannot be mixed with keystore.properties",
+        )
+    }
 
     val missing = linkedMapOf(
         "WLB_POC_KEYSTORE_PATH / wlb.poc.storeFile" to pocStorePath,
@@ -114,7 +117,7 @@ android {
         applicationId = baseApplicationId
         minSdk = 23
         targetSdk = 36
-        versionCode = configuredVersionCode
+        versionCode = baseVersionCode
         versionName = baseVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -161,6 +164,16 @@ android {
     }
 }
 
+// Only the POC variant receives the per-build live identity. Normal debug and
+// release outputs retain the stable base versionCode regardless of the POC env.
+androidComponents {
+    onVariants(selector().withBuildType("poc")) { variant ->
+        variant.outputs.forEach { output ->
+            output.versionCode.set(configuredPocVersionCode)
+        }
+    }
+}
+
 // validateSigningPoc is the central AGP signing boundary used by APK/AAB packaging.
 // Public variant and aggregate lifecycle tasks are included as regression-safe fallbacks.
 tasks.matching {
@@ -178,18 +191,23 @@ tasks.matching {
     dependsOn(verifyPocSigningInputs)
 }
 
+tasks.register("printBaseIdentity") {
+    group = "help"
+    description = "Prints the package and version identity shared by normal non-POC variants."
+    doLast {
+        println("WLB_BASE_APPLICATION_ID=$baseApplicationId")
+        println("WLB_BASE_VERSION_CODE=$baseVersionCode")
+        println("WLB_BASE_VERSION_NAME=$baseVersionName")
+    }
+}
+
 tasks.register("printPocIdentity") {
     group = "help"
     description = "Prints the expected package and version identity for a numbered POC build."
     doLast {
         val buildNumber = requirePocBuildNumber()
-        val versionCode =
-            versionMajor * 100_000_000 +
-                versionMinor * 1_000_000 +
-                versionPatch * 1_000 +
-                buildNumber
         println("WLB_POC_APPLICATION_ID=$baseApplicationId")
-        println("WLB_POC_VERSION_CODE=$versionCode")
+        println("WLB_POC_VERSION_CODE=${baseVersionCode + buildNumber}")
         println("WLB_POC_VERSION_NAME=$baseVersionName-poc.$buildNumber")
     }
 }
