@@ -52,6 +52,17 @@ interface ProcessOutputOptions {
   inspect?: (msg: string) => void;
 }
 
+interface PendingHeadlessStart {
+  tabId: string;
+  controller: AbortController;
+  settled: Promise<void>;
+  resolveSettled: () => void;
+}
+
+export type SecretLifecycleRunner = <T>(
+  operation: () => Promise<T> | T,
+) => Promise<T>;
+
 export class TabManager {
   private tabs = new Map<string, TabState>();
   private callStatusCache = new Map<string, CallStatus>();
@@ -69,6 +80,12 @@ export class TabManager {
   private cookieLeases = new Map<ChildProcess, EphemeralCookieFile>();
   private activeProcesses = new Set<ChildProcess>();
   private secretGeneration = 0;
+  private secretLifecycleRunner: SecretLifecycleRunner = (operation) =>
+    Promise.resolve().then(operation);
+  private pendingHeadlessStarts = new Set<PendingHeadlessStart>();
+  private pendingHeadlessByTab = new Map<string, PendingHeadlessStart>();
+  private closingTabIds = new Set<string>();
+  private tabCloseTasks = new Map<string, Promise<void>>();
 
   constructor() {
     this.relayPath = resolveResourcePath(
@@ -112,6 +129,14 @@ export class TabManager {
     this._botManager = bm;
   }
 
+  setSecretLifecycleRunner(runner: SecretLifecycleRunner): void {
+    this.secretLifecycleRunner = runner;
+  }
+
+  private runSecretLifecycle<T>(operation: () => Promise<T> | T): Promise<T> {
+    return this.secretLifecycleRunner(operation);
+  }
+
   private isPortFree(port: number): Promise<boolean> {
     return new Promise((resolve) => {
       const server = net.createServer();
@@ -135,8 +160,14 @@ export class TabManager {
   }
 
   async getOrCreateTab(tabId: string): Promise<TabState> {
+    if (this.closingTabIds.has(tabId)) {
+      throw new Error('Tab is closing');
+    }
     if (!this.tabs.has(tabId)) {
       const ports = await this.allocPorts();
+      if (this.closingTabIds.has(tabId)) {
+        throw new Error('Tab is closing');
+      }
       this.tabs.set(tabId, {
         relay: null,
         tunnelMode: TunnelMode.DC,
@@ -153,13 +184,43 @@ export class TabManager {
   }
 
   deleteTab(tabId: string): void {
-    const tab = this.tabs.get(tabId);
-    if (tab) {
-      this.killRelay(tabId, tab);
-      this.tabs.delete(tabId);
+    void this.closeTabAndWait(tabId).catch(() => {
+      console.error('[MAIN] Tab cleanup failed');
+    });
+  }
+
+  closeTabAndWait(tabId: string): Promise<void> {
+    const existing = this.tabCloseTasks.get(tabId);
+    if (existing) return existing;
+
+    const task = this.performTabClose(tabId);
+    this.tabCloseTasks.set(tabId, task);
+    const forget = (): void => {
+      if (this.tabCloseTasks.get(tabId) === task) {
+        this.tabCloseTasks.delete(tabId);
+      }
+    };
+    void task.then(forget, forget);
+    return task;
+  }
+
+  private async performTabClose(tabId: string): Promise<void> {
+    this.closingTabIds.add(tabId);
+    const pendingStarts = this.cancelPendingHeadlessStarts(
+      (pending) => pending.tabId === tabId,
+    );
+    try {
+      await this.runSecretLifecycle(async () => {
+        const tab = this.tabs.get(tabId);
+        this.tabs.delete(tabId);
+        this.botTabIds.delete(tabId);
+        this.callStatusCache.delete(tabId);
+        if (tab) await this.stopRelayAndWait(tabId, tab);
+      });
+    } finally {
+      await Promise.all(pendingStarts.map((pending) => pending.settled));
+      this.closingTabIds.delete(tabId);
     }
-    this.botTabIds.delete(tabId);
-    this.callStatusCache.delete(tabId);
   }
 
   addBotTab(tabId: string): void {
@@ -248,11 +309,13 @@ export class TabManager {
   }
 
   async sendBotCallLink(tabId: string, link: string): Promise<void> {
-    if (!this.botTabIds.has(tabId) || !this._botManager) return;
-    const tab = this.tabs.get(tabId);
-    if (!tab || tab.peerId == null) return;
-    console.log(`[MAIN] Sending headless result for bot tab ${tabId}`);
-    await this._botManager.sendMessage(tab.peerId, link);
+    return this.runSecretLifecycle(async () => {
+      if (!this.botTabIds.has(tabId) || !this._botManager) return;
+      const tab = this.tabs.get(tabId);
+      if (!tab || tab.peerId == null) return;
+      console.log(`[MAIN] Sending headless result for bot tab ${tabId}`);
+      await this._botManager.sendMessage(tab.peerId, link);
+    });
   }
 
   setUpstreamProxy(proxy: UpstreamProxy): void {
@@ -359,113 +422,199 @@ export class TabManager {
   }
 
   async startHeadless(tabId: string, platform: Platform, args: HeadlessStartArgs): Promise<void> {
-    const tab = await this.getOrCreateTab(tabId);
-    tab.platform = platform;
-    const joinTarget = args.mode === HeadlessMode.Join ? (args.target || '').trim() : '';
-    if (args.mode === HeadlessMode.Join && !joinTarget) {
-      this.sendLog(tabId, 'Join requested but no target link/room provided.');
-      return;
-    }
+    const pending = this.beginHeadlessStart(tabId);
+    const signal = pending.controller.signal;
+    let loginRequested = false;
+    try {
+      if (!this.headlessStartIsActive(pending)) return;
+      const tab = await this.getOrCreateTab(tabId);
+      if (!this.headlessStartIsActive(pending, tab)) return;
 
-    const config = this.headlessConfig(platform);
-    if (!config) {
-      this.sendLog(tabId, `Unsupported headless platform: ${platform}`);
-      return;
-    }
-    tab.tunnelMode = config.tunnelMode;
-    let cookies = await this.getCookiesForDomains(config.cookieDomains);
-    const refreshCookie = platform === Platform.WBStream ? 'wbx-refresh' : config.authCookie;
-    const needsLogin = !cookies.some((c) => c.name === refreshCookie);
-    if (needsLogin) {
-      if (tab.isBot) {
-        const reply = `Please log into ${config.platformName} in the creator app first, then try again.`;
-        this.sendLog(tabId, reply);
-        if (this._botManager && tab.peerId != null) {
-          await this._botManager.sendMessage(tab.peerId, reply);
-        }
+      tab.platform = platform;
+      const joinTarget = args.mode === HeadlessMode.Join ? (args.target || '').trim() : '';
+      if (args.mode === HeadlessMode.Join && !joinTarget) {
+        this.sendLog(tabId, 'Join requested but no target link/room provided.');
         return;
       }
-      this.sendLog(tabId, `No ${config.platformName} session found, opening login.`);
-      if (this._mainWindow && !this._mainWindow.isDestroyed()) {
-        this._mainWindow.webContents.send(IPC.LOGIN_REQUIRED, { tabId, url: config.loginUrl });
+
+      const config = this.headlessConfig(platform);
+      if (!config) {
+        this.sendLog(tabId, `Unsupported headless platform: ${platform}`);
+        return;
       }
-      if (platform === Platform.WBStream) {
-        this.sendLog(tabId, 'Waiting for x_wbaas_token, wbx-refresh, wbx-validation-key...');
-        await this.waitForCookies(
-          ['x_wbaas_token', 'wbx-refresh', 'wbx-validation-key'],
-          config.cookieDomains,
-        );
-      } else if (platform === Platform.Dion) {
-        this.sendLog(tabId, 'Waiting for vc-refresh-token, vc-access-token...');
-        await this.waitForCookies(
-          ['vc-refresh-token', 'vc-access-token'],
-          config.cookieDomains,
-        );
-      } else {
-        await this.waitForLogin(config.cookieDomains, config.authCookie);
+      tab.tunnelMode = config.tunnelMode;
+      let cookies = await this.getCookiesForDomains(config.cookieDomains);
+      if (!this.headlessStartIsActive(pending, tab)) return;
+
+      const refreshCookie = platform === Platform.WBStream ? 'wbx-refresh' : config.authCookie;
+      const needsLogin = !cookies.some((cookie) => cookie.name === refreshCookie);
+      if (needsLogin) {
+        if (tab.isBot) {
+          const reply = `Please log into ${config.platformName} in the creator app first, then try again.`;
+          this.sendLog(tabId, reply);
+          if (this.headlessStartIsActive(pending, tab)) {
+            await this.sendBotCallLink(tabId, reply);
+          }
+          return;
+        }
+
+        this.sendLog(tabId, `No ${config.platformName} session found, opening login.`);
+        if (this._mainWindow && !this._mainWindow.isDestroyed()) {
+          this._mainWindow.webContents.send(IPC.LOGIN_REQUIRED, { tabId, url: config.loginUrl });
+          loginRequested = true;
+        }
+
+        let loginCompleted: boolean;
+        if (platform === Platform.WBStream) {
+          this.sendLog(tabId, 'Waiting for x_wbaas_token, wbx-refresh, wbx-validation-key...');
+          loginCompleted = await this.waitForCookies(
+            ['x_wbaas_token', 'wbx-refresh', 'wbx-validation-key'],
+            config.cookieDomains,
+            signal,
+          );
+        } else if (platform === Platform.Dion) {
+          this.sendLog(tabId, 'Waiting for vc-refresh-token, vc-access-token...');
+          loginCompleted = await this.waitForCookies(
+            ['vc-refresh-token', 'vc-access-token'],
+            config.cookieDomains,
+            signal,
+          );
+        } else {
+          loginCompleted = await this.waitForLogin(
+            config.cookieDomains,
+            config.authCookie,
+            signal,
+          );
+        }
+        if (!loginCompleted || !this.headlessStartIsActive(pending, tab)) return;
+
+        if (this._mainWindow && !this._mainWindow.isDestroyed()) {
+          this._mainWindow.webContents.send(IPC.LOGIN_DONE, { tabId });
+        }
+        loginRequested = false;
+        this.sendLog(tabId, `${config.platformName} login captured.`);
+        cookies = await this.getCookiesForDomains(config.cookieDomains);
       }
-      if (this._mainWindow && !this._mainWindow.isDestroyed()) {
-        this._mainWindow.webContents.send(IPC.LOGIN_DONE, { tabId });
-      }
-      this.sendLog(tabId, `${config.platformName} login captured.`);
-      cookies = await this.getCookiesForDomains(config.cookieDomains);
-    }
-    this.sendLog(tabId, `${config.platformName} session cookies prepared (${cookies.length}).`);
-    await this.stopRelayAndWait(tabId, tab);
-    if (this.tabs.get(tabId) !== tab) return;
-    const cookieLease = await createEphemeralCookieFile(cookies);
-    const spawnArgs = ['--resources', 'default', '--cookies', cookieLease.filePath];
-    if (joinTarget) {
-      const flag = this.joinFlagFor(platform);
-      if (flag) spawnArgs.push(flag, joinTarget);
-    }
-    this.appendUpstreamArgs(spawnArgs);
-    const launchGeneration = this.secretGeneration;
-    let proc: ChildProcess;
-    try {
-      proc = spawn(config.binaryPath, spawnArgs, {
-        stdio: ['ignore', 'pipe', 'pipe'],
+      if (!this.headlessStartIsActive(pending, tab)) return;
+
+      this.sendLog(tabId, `${config.platformName} session cookies prepared (${cookies.length}).`);
+      await this.runSecretLifecycle(async () => {
+        if (!this.headlessStartIsActive(pending, tab)) return;
+        await this.stopRelayAndWait(tabId, tab);
+        if (!this.headlessStartIsActive(pending, tab)) return;
+
+        const cookieLease = await createEphemeralCookieFile(cookies);
+        if (!this.headlessStartIsActive(pending, tab)) {
+          if (!(await cookieLease.cleanup())) {
+            throw new Error('Temporary cookie material could not be removed');
+          }
+          return;
+        }
+
+        const spawnArgs = ['--resources', 'default', '--cookies', cookieLease.filePath];
+        if (joinTarget) {
+          const flag = this.joinFlagFor(platform);
+          if (flag) spawnArgs.push(flag, joinTarget);
+        }
+        this.appendUpstreamArgs(spawnArgs);
+        const launchGeneration = this.secretGeneration;
+        let proc: ChildProcess;
+        try {
+          proc = spawn(config.binaryPath, spawnArgs, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+        } catch (error) {
+          await cookieLease.cleanup();
+          throw error;
+        }
+        this.trackProcess(proc);
+        this.trackCookieLease(proc, cookieLease);
+        tab.relay = proc;
+        let sawAuthFailure = false;
+        this.attachProcessOutput(proc, tabId, {
+          headless: true,
+          inspect: (msg) => {
+            if (
+              msg.includes('status 401') ||
+              msg.includes('"UnauthorizedError"') ||
+              msg.includes('"error":"unauthorized') ||
+              msg.includes('empty access_token')
+            ) {
+              sawAuthFailure = true;
+            }
+          },
+        });
+        proc.on('close', async (code) => {
+          const wasCurrent = this.tabs.get(tabId) === tab && tab.relay === proc;
+          if (tab.relay === proc) tab.relay = null;
+          this.sendLog(tabId, `Headless exited with code ${code}`);
+          if (
+            sawAuthFailure &&
+            wasCurrent &&
+            launchGeneration === this.secretGeneration
+          ) {
+            await this.clearAuthCookies(config.cookieDomains, config.authCookie);
+            if (
+              this.tabs.get(tabId) === tab &&
+              tab.relay == null &&
+              launchGeneration === this.secretGeneration
+            ) {
+              void this.startHeadless(tabId, platform, args);
+            }
+          }
+        });
       });
-    } catch (error) {
-      await cookieLease.cleanup();
-      throw error;
-    }
-    this.trackProcess(proc);
-    this.trackCookieLease(proc, cookieLease);
-    tab.relay = proc;
-    let sawAuthFailure = false;
-    this.attachProcessOutput(proc, tabId, {
-      headless: true,
-      inspect: (msg) => {
-        if (
-          msg.includes('status 401') ||
-          msg.includes('"UnauthorizedError"') ||
-          msg.includes('"error":"unauthorized') ||
-          msg.includes('empty access_token')
-        ) {
-          sawAuthFailure = true;
-        }
-      },
-    });
-    proc.on('close', async (code) => {
-      const wasCurrent = this.tabs.get(tabId) === tab && tab.relay === proc;
-      if (tab.relay === proc) tab.relay = null;
-      this.sendLog(tabId, `Headless exited with code ${code}`);
-      if (
-        sawAuthFailure &&
-        wasCurrent &&
-        launchGeneration === this.secretGeneration
-      ) {
-        await this.clearAuthCookies(config.cookieDomains, config.authCookie);
-        if (
-          this.tabs.get(tabId) === tab &&
-          tab.relay == null &&
-          launchGeneration === this.secretGeneration
-        ) {
-          void this.startHeadless(tabId, platform, args);
+    } finally {
+      const wasLatest = this.pendingHeadlessByTab.get(tabId) === pending;
+      if (loginRequested && signal.aborted && wasLatest) {
+        if (this._mainWindow && !this._mainWindow.isDestroyed()) {
+          this._mainWindow.webContents.send(IPC.LOGIN_DONE, { tabId });
         }
       }
+      this.finishHeadlessStart(pending);
+    }
+  }
+
+  private beginHeadlessStart(tabId: string): PendingHeadlessStart {
+    this.pendingHeadlessByTab.get(tabId)?.controller.abort();
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
     });
+    const pending: PendingHeadlessStart = {
+      tabId,
+      controller: new AbortController(),
+      settled,
+      resolveSettled,
+    };
+    this.pendingHeadlessStarts.add(pending);
+    this.pendingHeadlessByTab.set(tabId, pending);
+    return pending;
+  }
+
+  private finishHeadlessStart(pending: PendingHeadlessStart): void {
+    this.pendingHeadlessStarts.delete(pending);
+    if (this.pendingHeadlessByTab.get(pending.tabId) === pending) {
+      this.pendingHeadlessByTab.delete(pending.tabId);
+    }
+    pending.resolveSettled();
+  }
+
+  private headlessStartIsActive(pending: PendingHeadlessStart, tab?: TabState): boolean {
+    return (
+      !pending.controller.signal.aborted &&
+      !this.closingTabIds.has(pending.tabId) &&
+      this.pendingHeadlessByTab.get(pending.tabId) === pending &&
+      (tab === undefined || this.tabs.get(pending.tabId) === tab)
+    );
+  }
+
+  private cancelPendingHeadlessStarts(
+    predicate: (pending: PendingHeadlessStart) => boolean,
+  ): PendingHeadlessStart[] {
+    const pending = Array.from(this.pendingHeadlessStarts).filter(predicate);
+    pending.forEach((start) => start.controller.abort());
+    return pending;
   }
 
   private async clearAuthCookies(cookieDomains: string[], authCookieName: string): Promise<void> {
@@ -504,35 +653,63 @@ export class TabManager {
     return removed;
   }
 
-  private waitForLogin(cookieDomains: string[], authCookieName: string): Promise<void> {
-    return new Promise((resolve) => {
+  private waitForLogin(
+    cookieDomains: string[],
+    authCookieName: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    return new Promise((resolve, reject) => {
       const ses = session.fromPartition(SESSION_PARTITION);
-      const finish = () => {
+      let finished = false;
+      const cleanup = (): void => {
         ses.cookies.removeListener('changed', onChanged);
-        resolve();
+        signal.removeEventListener('abort', onAbort);
       };
+      const finish = (completed: boolean): void => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        resolve(completed);
+      };
+      const fail = (error: unknown): void => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = (): void => finish(false);
       const onChanged = (
-        _e: Electron.Event,
+        _event: Electron.Event,
         cookie: Electron.Cookie,
         _cause: string,
         removed: boolean,
-      ) => {
+      ): void => {
         if (removed) return;
         if (cookie.name !== authCookieName) return;
         if (!cookie.domain || !cookieDomainMatchesRoots(cookie.domain, cookieDomains)) return;
-        finish();
+        finish(true);
       };
+
+      if (signal.aborted) {
+        finish(false);
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
       ses.cookies.on('changed', onChanged);
       ses.cookies.get({ name: authCookieName }).then((found) => {
-        if (found.some((c) => c.domain && cookieDomainMatchesRoots(c.domain, cookieDomains))) {
-          finish();
+        if (found.some((cookie) =>
+          cookie.domain != null && cookieDomainMatchesRoots(cookie.domain, cookieDomains)
+        )) {
+          finish(true);
         }
-      });
+      }).catch(fail);
     });
   }
 
-  invalidateSecretConsumers(): void {
+  invalidateSecretConsumers(): Promise<void> {
     this.secretGeneration += 1;
+    const pending = this.cancelPendingHeadlessStarts(() => true);
+    return Promise.all(pending.map((start) => start.settled)).then(() => undefined);
   }
 
   private trackProcess(proc: ChildProcess): void {
@@ -658,46 +835,67 @@ export class TabManager {
     const ses = session.fromPartition(SESSION_PARTITION);
     const all = await ses.cookies.get({});
     return all
-      .filter((c) => c.domain != null && cookieDomainMatchesRoots(c.domain, domains))
-      .map((c) => ({ name: c.name, value: c.value }));
+      .filter((cookie) => cookie.domain != null && cookieDomainMatchesRoots(cookie.domain, domains))
+      .map((cookie) => ({ name: cookie.name, value: cookie.value }));
   }
 
-  private waitForCookies(names: string[], cookieDomains: string[]): Promise<void> {
-    return new Promise((resolve) => {
+  private waitForCookies(
+    names: string[],
+    cookieDomains: string[],
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    return new Promise((resolve, reject) => {
       const ses = session.fromPartition(SESSION_PARTITION);
       const remaining = new Set(names);
-      const finish = () => {
+      let finished = false;
+      const cleanup = (): void => {
         ses.cookies.removeListener('changed', onChanged);
-        resolve();
+        signal.removeEventListener('abort', onAbort);
       };
+      const finish = (completed: boolean): void => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        resolve(completed);
+      };
+      const fail = (error: unknown): void => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = (): void => finish(false);
       const onChanged = (
-        _e: Electron.Event,
+        _event: Electron.Event,
         cookie: Electron.Cookie,
         _cause: string,
         removed: boolean,
-      ) => {
+      ): void => {
         if (removed) return;
         if (!remaining.has(cookie.name)) return;
         if (!cookie.domain || !cookieDomainMatchesRoots(cookie.domain, cookieDomains)) return;
         remaining.delete(cookie.name);
-        if (remaining.size === 0) finish();
+        if (remaining.size === 0) finish(true);
       };
+
+      if (signal.aborted) {
+        finish(false);
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
       ses.cookies.on('changed', onChanged);
       Promise.all(names.map((name) => ses.cookies.get({ name }))).then((results) => {
-        results.forEach((found, i) => {
-          if (
-            found.some((cookie) =>
-              cookie.domain != null && cookieDomainMatchesRoots(cookie.domain, cookieDomains),
-            )
-          ) {
-            remaining.delete(names[i]);
+        results.forEach((found, index) => {
+          if (found.some((cookie) =>
+            cookie.domain != null && cookieDomainMatchesRoots(cookie.domain, cookieDomains)
+          )) {
+            remaining.delete(names[index]);
           }
         });
-        if (remaining.size === 0) finish();
-      });
+        if (remaining.size === 0) finish(true);
+      }).catch(fail);
     });
   }
-
 
   async setWBStreamDeviceId(id: string): Promise<void> {
     if (!id) return;
@@ -720,5 +918,4 @@ export class TabManager {
       console.log('[wb-device-id] failed to persist');
     }
   }
-
 }
