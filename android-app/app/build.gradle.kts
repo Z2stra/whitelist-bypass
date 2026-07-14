@@ -8,12 +8,16 @@ plugins {
 val versionMajor = 0
 val versionMinor = 3
 val versionPatch = 7
-val versionBuildRaw = System.getenv("BUILD_NUMBER")
-val versionBuild = versionBuildRaw?.toIntOrNull() ?: 0
-
-if (versionBuildRaw != null && (versionBuildRaw.toIntOrNull() == null || versionBuild !in 0..999)) {
-    throw GradleException("BUILD_NUMBER must be an integer from 0 to 999")
-}
+val baseApplicationId = "bypass.whitelist"
+val baseVersionName = "$versionMajor.$versionMinor.$versionPatch"
+val pocBuildNumberRaw = System.getenv("WLB_POC_BUILD_NUMBER")
+val pocBuildNumber = pocBuildNumberRaw?.toIntOrNull()
+val configuredPocBuildNumber = pocBuildNumber?.takeIf { it in 1..999 } ?: 0
+val configuredVersionCode =
+    versionMajor * 100_000_000 +
+        versionMinor * 1_000_000 +
+        versionPatch * 1_000 +
+        configuredPocBuildNumber
 
 val signingPropertiesFile = rootProject.file("keystore.properties")
 val signingProperties = Properties().apply {
@@ -22,29 +26,58 @@ val signingProperties = Properties().apply {
     }
 }
 
-fun signingValue(environmentName: String, propertyName: String): String? {
-    return System.getenv(environmentName)?.takeIf { it.isNotEmpty() }
-        ?: signingProperties.getProperty(propertyName)?.takeIf { it.isNotEmpty() }
+fun nonEmptyEnvironmentValue(name: String): String? =
+    System.getenv(name)?.takeIf { it.isNotEmpty() }
+
+fun nonEmptyPropertyValue(name: String): String? =
+    signingProperties.getProperty(name)?.takeIf { it.isNotEmpty() }
+
+val environmentSigningValues = linkedMapOf(
+    "storeFile" to nonEmptyEnvironmentValue("WLB_POC_KEYSTORE_PATH"),
+    "storePassword" to nonEmptyEnvironmentValue("WLB_POC_KEYSTORE_PASSWORD"),
+    "keyAlias" to nonEmptyEnvironmentValue("WLB_POC_KEY_ALIAS"),
+    "keyPassword" to nonEmptyEnvironmentValue("WLB_POC_KEY_PASSWORD"),
+)
+val anyEnvironmentSigningValue = environmentSigningValues.values.any { !it.isNullOrEmpty() }
+val allEnvironmentSigningValues = environmentSigningValues.values.all { !it.isNullOrEmpty() }
+
+if (anyEnvironmentSigningValue && !allEnvironmentSigningValues) {
+    throw GradleException(
+        "POC signing environment must provide all four WLB_POC_* signing values; " +
+            "partial environment configuration cannot be mixed with keystore.properties",
+    )
 }
 
-val pocStorePath = signingValue("WLB_POC_KEYSTORE_PATH", "wlb.poc.storeFile")
-val pocStorePassword = signingValue("WLB_POC_KEYSTORE_PASSWORD", "wlb.poc.storePassword")
-val pocKeyAlias = signingValue("WLB_POC_KEY_ALIAS", "wlb.poc.keyAlias")
-val pocKeyPassword = signingValue("WLB_POC_KEY_PASSWORD", "wlb.poc.keyPassword")
-val pocSigningValuesPresent = listOf(
-    pocStorePath,
-    pocStorePassword,
-    pocKeyAlias,
-    pocKeyPassword,
-).all { !it.isNullOrEmpty() }
-val pocStoreFile = pocStorePath?.let(rootProject::file)
+val propertySigningValues = linkedMapOf(
+    "storeFile" to nonEmptyPropertyValue("wlb.poc.storeFile"),
+    "storePassword" to nonEmptyPropertyValue("wlb.poc.storePassword"),
+    "keyAlias" to nonEmptyPropertyValue("wlb.poc.keyAlias"),
+    "keyPassword" to nonEmptyPropertyValue("wlb.poc.keyPassword"),
+)
+val selectedSigningValues =
+    if (allEnvironmentSigningValues) environmentSigningValues else propertySigningValues
 
-fun validatePocPackagingInputs() {
-    if (versionBuildRaw == null || versionBuild !in 1..999) {
+val pocStorePath = selectedSigningValues.getValue("storeFile")
+val pocStorePassword = selectedSigningValues.getValue("storePassword")
+val pocKeyAlias = selectedSigningValues.getValue("keyAlias")
+val pocKeyPassword = selectedSigningValues.getValue("keyPassword")
+val pocSigningValuesPresent = selectedSigningValues.values.all { !it.isNullOrEmpty() }
+val pocStoreFile = pocStorePath?.let(rootProject::file)
+val missingPocStoreFile = layout.buildDirectory.file("missing-poc-signing-key.p12").get().asFile
+
+fun requirePocBuildNumber(): Int {
+    val value = pocBuildNumber
+    if (value == null || value !in 1..999) {
         throw GradleException(
-            "Signed POC packaging requires BUILD_NUMBER from 1 to 999 so every live APK has a unique versionCode",
+            "Signed POC packaging requires WLB_POC_BUILD_NUMBER from 1 to 999; " +
+                "use a strictly increasing value for every live APK",
         )
     }
+    return value
+}
+
+fun validatePocPackagingInputs() {
+    requirePocBuildNumber()
 
     val missing = linkedMapOf(
         "WLB_POC_KEYSTORE_PATH / wlb.poc.storeFile" to pocStorePath,
@@ -63,19 +96,10 @@ fun validatePocPackagingInputs() {
     }
 }
 
-fun isPocPackagingTask(taskName: String): Boolean {
-    return when (taskName.substringAfterLast(':').lowercase()) {
-        "assemblepoc", "bundlepoc", "installpoc", "packagepoc" -> true
-        else -> false
-    }
-}
-
-if (gradle.startParameter.taskNames.any(::isPocPackagingTask)) {
-    validatePocPackagingInputs()
-}
-
-gradle.taskGraph.whenReady {
-    if (allTasks.any { isPocPackagingTask(it.path) }) {
+val verifyPocSigningInputs = tasks.register("verifyPocSigningInputs") {
+    group = "verification"
+    description = "Validates the external signing identity required for live POC artifacts."
+    doLast {
         validatePocPackagingInputs()
     }
 }
@@ -87,27 +111,22 @@ android {
     }
 
     defaultConfig {
-        applicationId = "bypass.whitelist"
+        applicationId = baseApplicationId
         minSdk = 23
         targetSdk = 36
-        versionCode =
-            versionMajor * 100_000_000 +
-                versionMinor * 1_000_000 +
-                versionPatch * 1_000 +
-                versionBuild
-        versionName = "$versionMajor.$versionMinor.$versionPatch"
+        versionCode = configuredVersionCode
+        versionName = baseVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
-        if (pocSigningValuesPresent) {
-            create("poc") {
-                storeFile = pocStoreFile
-                storePassword = pocStorePassword
-                keyAlias = pocKeyAlias
-                keyPassword = pocKeyPassword
-            }
+        create("poc") {
+            storeType = "PKCS12"
+            storeFile = pocStoreFile ?: missingPocStoreFile
+            storePassword = pocStorePassword ?: "missing-poc-store-password"
+            keyAlias = pocKeyAlias ?: "missing-poc-key-alias"
+            keyPassword = pocKeyPassword ?: "missing-poc-key-password"
         }
     }
 
@@ -127,11 +146,10 @@ android {
         create("poc") {
             initWith(getByName("release"))
             isDebuggable = false
-            versionNameSuffix = "-poc.${if (versionBuild > 0) versionBuild else "local"}"
+            versionNameSuffix =
+                "-poc.${if (configuredPocBuildNumber > 0) configuredPocBuildNumber else "local"}"
             matchingFallbacks += listOf("release")
-            if (pocSigningValuesPresent) {
-                signingConfig = signingConfigs.getByName("poc")
-            }
+            signingConfig = signingConfigs.getByName("poc")
         }
     }
     compileOptions {
@@ -140,6 +158,36 @@ android {
     }
     kotlinOptions {
         jvmTarget = "11"
+    }
+}
+
+// validateSigningPoc is the central AGP signing boundary used by APK/AAB packaging.
+// Public lifecycle tasks are included as an explicit regression-safe fallback.
+tasks.matching {
+    it.name in setOf(
+        "validateSigningPoc",
+        "assemblePoc",
+        "bundlePoc",
+        "installPoc",
+        "packagePoc",
+    )
+}.configureEach {
+    dependsOn(verifyPocSigningInputs)
+}
+
+tasks.register("printPocIdentity") {
+    group = "help"
+    description = "Prints the expected package and version identity for a numbered POC build."
+    doLast {
+        val buildNumber = requirePocBuildNumber()
+        val versionCode =
+            versionMajor * 100_000_000 +
+                versionMinor * 1_000_000 +
+                versionPatch * 1_000 +
+                buildNumber
+        println("WLB_POC_APPLICATION_ID=$baseApplicationId")
+        println("WLB_POC_VERSION_CODE=$versionCode")
+        println("WLB_POC_VERSION_NAME=$baseVersionName-poc.$buildNumber")
     }
 }
 
