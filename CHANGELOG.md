@@ -12,12 +12,20 @@ All notable project changes made as part of the staged control-plane work are re
 - Added a draft platform-neutral `PlatformAdapter` contract.
 - Added a WLB2 envelope draft with an external random `keyId` to avoid circular per-device key selection.
 - Added the official VK API PING/PONG POC checklist and results template.
+- Documented the source-free separate-machine live-test boundary and the Android POC signing/key lifecycle.
 
 ### Android
 
 - Scoped the Quick Settings `VpnTileService` declaration to API 24 without raising the application `minSdk` from 23.
 - Updated active foreground-service notifications through `startForeground`, closing Android 13 notification-permission lint errors without introducing a user-facing notification permission request.
 - Added a reproducible Android CI gate for unit tests, `lintDebug`, debug APK assembly and report/artifact retention.
+- Removed the repository-owned `debug.keystore` from active use and stopped signing release output with a publicly available debug key.
+- Restored standard machine-local Android debug signing and left production release signing intentionally unconfigured.
+- Added a separate `poc` build type that requires an external private keystore plus a unique bounded `BUILD_NUMBER`.
+- Added local environment/property inputs for POC signing without committing key paths, aliases or passwords.
+- Made signed POC packaging fail closed when build identity or signing inputs are absent.
+- Added public-CI checks that reject tracked private signing material, prove fail-closed behavior, build with an ephemeral CI-only key and verify the resulting APK signature without publishing it as a live artifact.
+- Expanded project, Android and Creator ignore rules for local secrets, signing files, build output, runtime profiles and versioned live bundles.
 
 ### Creator VK transport security
 
@@ -77,10 +85,12 @@ All notable project changes made as part of the staged control-plane work are re
 ### Security status
 
 - VK transport hardening, typed headless process events, the isolated `WLB-POC/1` handler and the Electron IPC/remote-content trust boundary are implemented and tested.
-- Stored VK/proxy secrets are now main-process owned and OS-protected; controlled POC credentials remain gated on merge, Windows DPAPI smoke and local upgrade verification.
+- Stored VK/proxy secrets are main-process owned and OS-protected; the merged build passed the local first-run Windows DPAPI and protected-storage smoke.
+- Live POC delivery is now gated on an external persistent Android POC key and versioned prebuilt artifacts for the separate test machine.
 
 ### Known baseline debt
 
 - Android has no blocking lint errors; 69 non-blocking warnings remain classified as technical debt.
 - Platform sessions remain in the persistent Chromium profile, and proxy credentials are still visible transiently in child-process command-line arguments to legacy Go binaries.
 - Creator dependency audit findings remain a separate dependency-upgrade task; no automatic `npm audit fix` was applied.
+- The historical repository debug key remains publicly recoverable and must never be trusted again, even after deletion from the current tree.
