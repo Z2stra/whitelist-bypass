@@ -21,13 +21,15 @@ All notable project changes made as part of the staged control-plane work are re
 - Added a reproducible Android CI gate for unit tests, `lintDebug`, debug APK assembly and report/artifact retention.
 - Removed the repository-owned `debug.keystore` from active use and stopped signing release output with a publicly available debug key.
 - Restored standard machine-local Android debug signing and left production release signing intentionally unconfigured.
-- Added a separate `poc` build type that requires an external PKCS12 keystore plus a strictly increasing bounded `WLB_POC_BUILD_NUMBER`.
-- Applied the numbered live version code only to `poc` outputs so normal debug/release artifacts retain the stable base identity.
+- Added a separate non-debuggable `poc` build type that requires an external PKCS12 keystore plus a strictly increasing bounded `WLB_POC_BUILD_NUMBER`.
+- Applied the numbered live version code only to signed POC APK output so normal debug/release artifacts retain the stable base identity.
+- Restricted live POC delivery to APK and made POC Android App Bundle production fail with an explicit unsupported-operation error.
 - Added local environment/property inputs for POC signing without committing key paths, aliases or passwords.
-- Rejected partial signing environments only at the POC artifact boundary, preventing source mixing without breaking ordinary non-POC tasks.
-- Made signed APK, bundle and aggregate POC packaging fail closed when build identity or signing inputs are absent.
-- Added public-CI checks that exercise fail-closed artifact paths, verify both environment and properties configuration, compare the APK signer certificate with the generated CI key, validate Gradle-derived APK/debug identities and reject debuggable POC output without publishing CI POC artifacts.
-- Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths.
+- Rejected partial signing environments only at the POC APK boundary, preventing source mixing without breaking ordinary non-POC tasks.
+- Made signed POC APK and aggregate APK packaging fail closed when build identity or signing inputs are absent.
+- Added public-CI checks that verify environment and properties through two separately numbered signed APKs, compare each APK signer certificate with the generated CI key, validate Gradle-derived identities, reject debuggable POC output and confirm POC AAB production remains disabled.
+- Added a regression check proving the ordinary release APK remains unsigned.
+- Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths; required-check enforcement remains a GitHub ruleset/branch-protection operator task.
 - Added an operator procedure for certificate-fingerprint comparison and first-install/in-place-update proof using two successively numbered POC APKs.
 - Expanded project, Android and Creator ignore rules for local secrets, signing files, additional PKCS/key containers, build output, runtime profiles and versioned live bundles.
 
@@ -90,7 +92,7 @@ All notable project changes made as part of the staged control-plane work are re
 
 - VK transport hardening, typed headless process events, the isolated `WLB-POC/1` handler and the Electron IPC/remote-content trust boundary are implemented and tested.
 - Stored VK/proxy secrets are main-process owned and OS-protected; the merged build passed the local first-run Windows DPAPI and protected-storage smoke.
-- Live POC delivery is now gated on an external persistent Android POC key and versioned prebuilt artifacts for the separate test machine.
+- Live POC delivery is gated on an external persistent Android POC key and a versioned prebuilt APK-only bundle for the separate test machine.
 
 ### Known baseline debt
 
@@ -98,3 +100,4 @@ All notable project changes made as part of the staged control-plane work are re
 - Platform sessions remain in the persistent Chromium profile, and proxy credentials are still visible transiently in child-process command-line arguments to legacy Go binaries.
 - Creator dependency audit findings remain a separate dependency-upgrade task; no automatic `npm audit fix` was applied.
 - The historical repository debug key remains publicly recoverable and must never be trusted again, even after deletion from the current tree.
+- The repository signing-material workflow runs on every pull request, but making it a required `main` status check remains an explicit repository-rules operator task.
