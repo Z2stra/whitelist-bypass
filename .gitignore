@@ -1,8 +1,185 @@
+# =============================================================================
+# Operating systems
+# =============================================================================
+
 .DS_Store
-relay/mobile.aar
-relay/mobile-sources.jar
-relay/relay-*
-prebuilts/
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+
+# =============================================================================
+# IDEs and editors
+# =============================================================================
+
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+
+# =============================================================================
+# Local secrets and machine-specific configuration
+# =============================================================================
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Canonical local-only directories
+/secrets/
+/local-secrets/
+/credentials/
+/local-config/
+
+# Local variants of scripts/configs
+*.local.json
+*.local.properties
+*.local.ps1
+*.local.cmd
+.npmrc.local
+
+# Android signing configuration
+**/keystore.properties
+**/signing.properties
+**/vkid.local.properties
+**/vk-poc.local.properties
+
+# Private keys and signing containers
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+
+
+# =============================================================================
+# Creator runtime data and credential material
+# =============================================================================
+
+# Legacy or accidentally copied cookie material
 cookies*.json
-relay/relay
-whitelist-experiments/
+cookies.zip
+
+# Electron protected settings must stay in Windows userData, never in Git
+protected-settings.v*.json
+protected-settings.v*.json.*
+
+# Local Electron profiles, should a custom userData path be placed in the repo
+/creator-user-data/
+/electron-user-data/
+/test-user-data/
+
+
+# =============================================================================
+# Logs, diagnostics, dumps and temporary files
+# =============================================================================
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+*.dmp
+*.stackdump
+*.hprof
+
+*.tmp
+*.temp
+*.bak
+
+coverage/
+*.lcov
+coverage*.out
+*.prof
+*.test
+*.tsbuildinfo
+
+
+# =============================================================================
+# Node.js / Electron Creator
+# =============================================================================
+
+/creator-app/node_modules/
+/creator-app/dist/
+/creator-app/.test-dist/
+/creator-app/coverage/
+
+# electron-builder output
+/prebuilts/
+
+# Final local-only bundles copied to the separate live-test machine
+/live-bundles/
+/release-bundles/
+/local-artifacts/
+
+
+# =============================================================================
+# Android / Gradle
+# =============================================================================
+
+/android-app/.gradle/
+/android-app/.idea/
+/android-app/local.properties
+/android-app/**/build/
+/android-app/.externalNativeBuild/
+/android-app/.cxx/
+/android-app/.kotlin/
+/android-app/captures/
+/android-app/app/release/
+
+# Manually copied Android artifacts
+*.apk
+*.aab
+*.apks
+
+
+# =============================================================================
+# Go / gomobile generated outputs
+# =============================================================================
+
+/relay/mobile.aar
+/relay/mobile-sources.jar
+
+/relay/relay
+/relay/relay.exe
+/relay/relay-bundle
+/relay/relay-bundle.exe
+/relay/relay-darwin
+
+# Creator packaging inputs generated from the Go modules
+/headless/headless-*-bundle
+/headless/headless-*-bundle.exe
+/headless/headless-*-darwin
+
+# Module-local compiled creator/joiner binaries
+/headless/*/headless-*-creator
+/headless/*/headless-*-creator.exe
+/headless/*/headless-*-joiner
+/headless/*/headless-*-joiner.exe
+
+
+# =============================================================================
+# Temporary patch-transfer and audit machinery
+# =============================================================================
+
+/.github/patches/
+/.github/workflows/temp-*.yml
+/.github/workflows/temp-*.yaml
+
+*.mbox
+
+
+# =============================================================================
+# Project-local experiments
+# =============================================================================
+
+/whitelist-experiments/
