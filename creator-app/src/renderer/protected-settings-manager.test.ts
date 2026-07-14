@@ -20,7 +20,6 @@ class MemoryStorage {
   }
 }
 
-
 class FailingCleanupStorage extends MemoryStorage {
   removeItem(_key: string): void {
     throw new Error('synthetic cleanup failure');
@@ -84,7 +83,6 @@ test('failed migration keeps plaintext until a later protected save succeeds', a
   }
 });
 
-
 test('successful protected migration does not hide a legacy plaintext cleanup failure', async () => {
   const storage = new FailingCleanupStorage();
   storage.setItem(LEGACY_BOT_SETTINGS_KEY, JSON.stringify({ token: 'legacy', groupId: '42', userId: '1' }));
@@ -103,7 +101,6 @@ test('successful protected migration does not hide a legacy plaintext cleanup fa
     restore();
   }
 });
-
 
 test('migration confirmation refuses to delete a legacy secret missing from protected projection', async () => {
   const storage = new MemoryStorage();
@@ -151,6 +148,33 @@ test('a later keep-only save cannot delete a legacy token that was never protect
       /legacy secrets are not confirmed/,
     );
     assert.notEqual(storage.getItem(LEGACY_BOT_SETTINGS_KEY), null);
+    assert.equal(manager.botRunning, false);
+  } finally {
+    restore();
+  }
+});
+
+test('pending legacy plaintext blocks bot auto-start even when protected settings are configured', async () => {
+  const storage = new MemoryStorage();
+  storage.setItem('botEnabled', 'true');
+  storage.setItem(
+    LEGACY_BOT_SETTINGS_KEY,
+    JSON.stringify({ token: 'legacy-token', groupId: '42', userId: '1' }),
+  );
+  let startCalls = 0;
+  const restore = installGlobals(storage, {
+    startBot: async () => {
+      startCalls += 1;
+      return { success: true };
+    },
+  });
+  try {
+    const manager = new RendererTabManager(() => {});
+    manager.settingsView = VIEW;
+    assert.equal(manager.hasBotConfiguration(), false);
+    await manager.autoStartBot();
+    assert.equal(startCalls, 0);
+    assert.equal(storage.getItem('botEnabled'), 'false');
     assert.equal(manager.botRunning, false);
   } finally {
     restore();
