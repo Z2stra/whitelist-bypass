@@ -51,6 +51,11 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [x] Validate Electron IPC senders and runtime arguments.
 - [x] Remove Node privileges from remote web content and restrict navigation, redirects, popups and permissions to explicit platform origins.
 - [x] Move long-lived secrets out of renderer `localStorage`; document remaining cookie-storage risk.
+- [x] Keep headless login waits cancellable and outside the credential lifecycle lock; serialize only the final process spawn/secret-consumption phase.
+- [x] Make tab close cancel pending starts, wait for child exit and verify ephemeral cookie cleanup.
+- [x] Serialize bot result delivery with credential rotation, including the legacy webview result path.
+- [x] Validate legacy migration before stopping consumers and block bot start while plaintext remnants remain.
+- [x] Capture the WB device ID in the main process without printing it into the remote webview console.
 
 ### Phase 1 — official VK API PING/PONG POC
 
@@ -118,4 +123,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: Phase 0 documentation is established. Android baseline checks are green. VK transport hardening, typed headless process events, IPC sender/argument validation, remote-webview isolation, the POC-only `WLB-POC/1` handler and main-process OS-protected settings are implemented. Creator is single-instance; settings replacement waits for active secret consumers to exit; newer store formats are preserved; raw cookie export is removed and headless cookie files are ephemeral with retryable cleanup. Remaining same-user/process-argument risks are documented. The official VK API POC has not started. Real credentials may be introduced only in a post-merge Windows build after the DPAPI smoke and local upgrade migration are confirmed.**
+**Current status: Phase 0 documentation is established. Android baseline checks are green. VK transport hardening, typed headless process events, IPC sender/argument validation, remote-webview isolation, the POC-only `WLB-POC/1` handler and main-process OS-protected settings are implemented. Creator is single-instance; settings replacement cancels pending login starts and waits for active secret consumers to exit; tab close waits for process and temporary-cookie cleanup; bot result delivery is serialized with credential rotation; newer store formats are preserved; raw cookie export is removed; WB device IDs are captured without remote-console disclosure; and bot startup is blocked while legacy plaintext remains. PR #8 stays Draft until its final CI/security review and the required local Windows upgrade/migration smoke are complete. The official VK API POC has not started. Real credentials may be introduced only in a post-merge Windows build after the DPAPI smoke and local upgrade migration are confirmed.**
