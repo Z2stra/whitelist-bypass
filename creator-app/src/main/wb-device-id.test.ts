@@ -17,7 +17,10 @@ test('WB device IDs are accepted only as bounded printable non-space strings', (
 
 test('WB device ID reads are restricted to the exact HTTPS WB Stream origin', () => {
   assert.equal(isWBDeviceIdSourceUrl('https://stream.wb.ru/room/example'), true);
+  assert.equal(isWBDeviceIdSourceUrl('https://stream.wb.ru:443/room/example'), true);
   assert.equal(isWBDeviceIdSourceUrl('http://stream.wb.ru/'), false);
+  assert.equal(isWBDeviceIdSourceUrl('https://stream.wb.ru:8443/'), false);
+  assert.equal(isWBDeviceIdSourceUrl('https://user:pass@stream.wb.ru/'), false);
   assert.equal(isWBDeviceIdSourceUrl('https://evilstream.wb.ru/'), false);
   assert.equal(isWBDeviceIdSourceUrl('https://stream.wb.ru.evil.example/'), false);
   assert.equal(isWBDeviceIdSourceUrl('not a url'), false);
