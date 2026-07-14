@@ -22,12 +22,14 @@ All notable project changes made as part of the staged control-plane work are re
 - Removed the repository-owned `debug.keystore` from active use and stopped signing release output with a publicly available debug key.
 - Restored standard machine-local Android debug signing and left production release signing intentionally unconfigured.
 - Added a separate `poc` build type that requires an external PKCS12 keystore plus a strictly increasing bounded `WLB_POC_BUILD_NUMBER`.
+- Applied the numbered live version code only to `poc` outputs so normal debug/release artifacts retain the stable base identity.
 - Added local environment/property inputs for POC signing without committing key paths, aliases or passwords.
-- Rejected partial signing environments so individual environment values cannot be silently mixed with `keystore.properties`.
+- Rejected partial signing environments only at the POC artifact boundary, preventing source mixing without breaking ordinary non-POC tasks.
 - Made signed APK, bundle and aggregate POC packaging fail closed when build identity or signing inputs are absent.
-- Added public-CI checks that reject tracked private signing material, exercise fail-closed artifact paths, verify both environment and properties configuration, compare the APK signer certificate with the generated CI key, and validate Gradle-derived APK identity without publishing CI POC artifacts.
+- Added public-CI checks that exercise fail-closed artifact paths, verify both environment and properties configuration, compare the APK signer certificate with the generated CI key, validate Gradle-derived APK/debug identities and reject debuggable POC output without publishing CI POC artifacts.
+- Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths.
 - Added an operator procedure for certificate-fingerprint comparison and first-install/in-place-update proof using two successively numbered POC APKs.
-- Expanded project, Android and Creator ignore rules for local secrets, signing files, build output, runtime profiles and versioned live bundles.
+- Expanded project, Android and Creator ignore rules for local secrets, signing files, additional PKCS/key containers, build output, runtime profiles and versioned live bundles.
 
 ### Creator VK transport security
 
