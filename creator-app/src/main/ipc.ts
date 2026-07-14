@@ -2,7 +2,7 @@ import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { pathToFileURL } from 'url';
-import { TabManager } from './tab-manager';
+import { SecretLifecycleRunner, TabManager } from './tab-manager';
 import { BotManager } from '../bot/bot-manager';
 import { BotCommandMode } from '../bot/command-mode';
 import { safeErrorMessage } from '../bot/security';
@@ -31,6 +31,7 @@ import {
   ProtectedSettingsStore,
   validateProtectedSettingsUpdate,
 } from './protected-settings';
+import { validateAndNormalizeLegacySettingsMigration } from './legacy-settings-validation';
 
 const APP_INDEX_PATH = path.join(__dirname, '..', '..', 'index.html');
 const APP_INDEX_URL = pathToFileURL(APP_INDEX_PATH).toString();
@@ -83,7 +84,6 @@ async function stopBotManager(tabManager: TabManager): Promise<void> {
 }
 
 async function stopSecretConsumers(tabManager: TabManager): Promise<void> {
-  tabManager.invalidateSecretConsumers();
   await stopBotManager(tabManager);
   await tabManager.stopAllRelaysAndWait();
 }
@@ -94,7 +94,9 @@ export function registerIpcHandlers(
   botCommandMode: BotCommandMode = BotCommandMode.Operational,
 ): void {
   let secretLifecycleQueue: Promise<void> = Promise.resolve();
-  const runSecretLifecycle = <T>(operation: () => Promise<T> | T): Promise<T> => {
+  const runSecretLifecycle: SecretLifecycleRunner = <T>(
+    operation: () => Promise<T> | T,
+  ): Promise<T> => {
     const run = secretLifecycleQueue.then(operation, operation);
     secretLifecycleQueue = run.then(
       () => undefined,
@@ -102,6 +104,20 @@ export function registerIpcHandlers(
     );
     return run;
   };
+  tabManager.setSecretLifecycleRunner(runSecretLifecycle);
+
+  const rotateSecretConsumers = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const pendingHeadlessStarts = tabManager.invalidateSecretConsumers();
+    try {
+      return await runSecretLifecycle(async () => {
+        await stopSecretConsumers(tabManager);
+        return operation();
+      });
+    } finally {
+      await pendingHeadlessStarts;
+    }
+  };
+
   registerTrustedHandler(IPC.GET_HOOK_CODE, tabManager, async (_event, ...args) => {
     assertArgumentCount(args.length, [2]);
     const tabId = assertTabId(args[0]);
@@ -142,12 +158,12 @@ export function registerIpcHandlers(
     const tabId = assertTabId(args[0]);
     const platform = assertPlatform(args[1]);
     const startArgs = assertHeadlessStartArgs(args[2]);
-    return runSecretLifecycle(() => tabManager.startHeadless(tabId, platform, startArgs));
+    return tabManager.startHeadless(tabId, platform, startArgs);
   });
 
-  registerTrustedHandler(IPC.CLOSE_TAB, tabManager, (_event, ...args) => {
+  registerTrustedHandler(IPC.CLOSE_TAB, tabManager, async (_event, ...args) => {
     assertArgumentCount(args.length, [1]);
-    tabManager.deleteTab(assertTabId(args[0]));
+    return tabManager.closeTabAndWait(assertTabId(args[0]));
   });
 
   registerTrustedHandler(IPC.GET_PROTECTED_SETTINGS, tabManager, (_event, ...args) => {
@@ -157,10 +173,10 @@ export function registerIpcHandlers(
 
   registerTrustedHandler(IPC.MIGRATE_LEGACY_SETTINGS, tabManager, async (_event, ...args) => {
     assertArgumentCount(args.length, [1]);
+    const legacy = validateAndNormalizeLegacySettingsMigration(args[0]);
     protectedSettings.ensureWritable();
-    return runSecretLifecycle(async () => {
-      await stopSecretConsumers(tabManager);
-      const view = await protectedSettings.migrateLegacy(args[0]);
+    return rotateSecretConsumers(async () => {
+      const view = await protectedSettings.migrateLegacy(legacy);
       tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
       return view;
     });
@@ -168,11 +184,10 @@ export function registerIpcHandlers(
 
   registerTrustedHandler(IPC.SAVE_PROTECTED_SETTINGS, tabManager, async (_event, ...args) => {
     assertArgumentCount(args.length, [1]);
-    validateProtectedSettingsUpdate(args[0]);
+    const update = validateProtectedSettingsUpdate(args[0]);
     protectedSettings.ensureWritable();
-    return runSecretLifecycle(async () => {
-      await stopSecretConsumers(tabManager);
-      const view = await protectedSettings.applyUpdate(args[0]);
+    return rotateSecretConsumers(async () => {
+      const view = await protectedSettings.applyUpdate(update);
       tabManager.setUpstreamProxy(protectedSettings.getUpstreamProxy());
       return view;
     });
@@ -182,65 +197,70 @@ export function registerIpcHandlers(
     assertNoArguments(args);
     return runSecretLifecycle(async () => {
       let settings: BotSettings;
-    try {
-      settings = protectedSettings.getBotSettings();
-    } catch (error) {
-      const message = error instanceof ProtectedSettingsError
-        ? error.message
-        : safeErrorMessage(error, 'Protected VK bot settings');
-      return { success: false, error: message };
-    }
+      try {
+        settings = protectedSettings.getBotSettings();
+      } catch (error) {
+        const message = error instanceof ProtectedSettingsError
+          ? error.message
+          : safeErrorMessage(error, 'Protected VK bot settings');
+        return { success: false, error: message };
+      }
 
       await stopBotManager(tabManager);
 
       try {
-      const bm = new BotManager(
-        settings,
-        async (tabConfig) => {
-          if (!tabManager.mainWindow || tabManager.mainWindow.isDestroyed()) return;
-          const tabId = 'bot-tab-' + Date.now();
-          const tab = await tabManager.getOrCreateTab(tabId);
-          tab.tunnelMode = tabConfig.mode;
-          tab.platform = tabConfig.platform || Platform.VK;
-          tab.peerId = tabConfig.peerId;
-          tab.isBot = true;
-          tabManager.addBotTab(tabId);
-          tabManager.mainWindow.webContents.send(IPC.CREATE_BOT_TAB, {
-            tabId,
-            mode: tabConfig.mode,
-            peerId: tabConfig.peerId,
-            platform: tabConfig.platform || Platform.VK,
-            joinTarget: tabConfig.joinTarget,
-          });
-          console.log('[BOT] Created tab; mode:', tabConfig.mode, 'platform:', tabConfig.platform);
-        },
-        () => tabManager.getTabList(),
-        (tabId) => {
-          tabManager.deleteTab(tabId);
-          console.log('[BOT] Closed tab');
+        const bm = new BotManager(
+          settings,
+          async (tabConfig) => {
+            if (!tabManager.mainWindow || tabManager.mainWindow.isDestroyed()) return;
+            const tabId = 'bot-tab-' + Date.now();
+            const tab = await tabManager.getOrCreateTab(tabId);
+            tab.tunnelMode = tabConfig.mode;
+            tab.platform = tabConfig.platform || Platform.VK;
+            tab.peerId = tabConfig.peerId;
+            tab.isBot = true;
+            tabManager.addBotTab(tabId);
+            tabManager.mainWindow.webContents.send(IPC.CREATE_BOT_TAB, {
+              tabId,
+              mode: tabConfig.mode,
+              peerId: tabConfig.peerId,
+              platform: tabConfig.platform || Platform.VK,
+              joinTarget: tabConfig.joinTarget,
+            });
+            console.log('[BOT] Created tab; mode:', tabConfig.mode, 'platform:', tabConfig.platform);
+          },
+          () => tabManager.getTabList(),
+          (tabId) => {
+            void tabManager.closeTabAndWait(tabId)
+              .then(() => {
+                console.log('[BOT] Closed tab');
+                if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
+                  tabManager.mainWindow.webContents.send(IPC.CLOSE_BOT_TAB, { tabId });
+                }
+              })
+              .catch((error) => {
+                console.error(safeErrorMessage(error, 'Bot tab close'));
+              });
+          },
+          { commandMode: botCommandMode },
+        );
+        bm.onError = (msg: string) => {
           if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
-            tabManager.mainWindow.webContents.send(IPC.CLOSE_BOT_TAB, { tabId });
+            tabManager.mainWindow.webContents.send(IPC.BOT_ERROR, msg);
           }
-        },
-        { commandMode: botCommandMode },
-      );
-      bm.onError = (msg: string) => {
-        if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
-          tabManager.mainWindow.webContents.send(IPC.BOT_ERROR, msg);
+        };
+        tabManager.botManager = bm;
+        const started = await bm.start();
+        if (!started) {
+          if (tabManager.botManager === bm) tabManager.botManager = null;
+          return { success: false };
         }
-      };
-      tabManager.botManager = bm;
-      const started = await bm.start();
-      if (!started) {
-        if (tabManager.botManager === bm) tabManager.botManager = null;
-        return { success: false };
-      }
-      return { success: true };
-    } catch (error) {
-      const message = safeErrorMessage(error, 'VK bot configuration');
-      if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
-        tabManager.mainWindow.webContents.send(IPC.BOT_ERROR, message);
-      }
+        return { success: true };
+      } catch (error) {
+        const message = safeErrorMessage(error, 'VK bot configuration');
+        if (tabManager.mainWindow && !tabManager.mainWindow.isDestroyed()) {
+          tabManager.mainWindow.webContents.send(IPC.BOT_ERROR, message);
+        }
         return { success: false, error: message };
       }
     });
@@ -266,5 +286,4 @@ export function registerIpcHandlers(
     const result = assertSensitiveResult(args[1]);
     return tabManager.sendBotCallLink(tabId, result);
   });
-
 }
