@@ -178,5 +178,5 @@ test('tab close, bot replies and legacy migration share the safe lifecycle bound
     'legacy migration must validate before any bot or process is stopped',
   );
   assert.match(validation, /validateProtectedSettingsUpdate/);
-  assert.match(validation, /Proxy username/);
+  assert.match(validation, /username: optionalSecretUpdate\(proxy\?\.user, false\)/);
 });
