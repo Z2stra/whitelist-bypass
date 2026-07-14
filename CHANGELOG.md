@@ -64,10 +64,15 @@ All notable project changes made as part of the staged control-plane work are re
 - Replaced persistent headless `cookies-*.json` files with random process-scoped temporary files plus exit/crash cleanup.
 - Tightened cookie-domain matching to exact roots/proper subdomains and removed WB device IDs/cookie details from normal logs.
 - Documented persistent Chromium-cookie, same-user DPAPI and child-process command-line residual risks.
-
 - Preserved newer protected-store versions instead of quarantining or overwriting them during downgrade.
 - Made credential rotation wait for BotManager/child exit and retry temporary cookie cleanup after Windows sharing failures.
 - Required migration confirmation before deleting legacy plaintext and allowed independent proxy credential replacement.
+- Moved platform-login waiting outside the credential lifecycle queue while keeping the final cookie-file creation, proxy argument selection and process spawn serialized.
+- Added cancellation for pending login/start operations during settings rotation and tab close, with listener cleanup and duplicate-close coalescing.
+- Made tab close await child termination and ephemeral cookie cleanup instead of deleting state after a best-effort kill.
+- Serialized both typed and legacy bot result delivery against community-token rotation.
+- Prevalidated legacy migration input before stopping any consumers and disabled bot auto-start/manual start while legacy plaintext keys remain.
+- Replaced the injected WB device-ID `console.log` channel with an exact-origin, bounded main-process `executeJavaScript` result read.
 
 ### Security status
 
