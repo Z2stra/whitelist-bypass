@@ -155,9 +155,11 @@ function Get-SigningMetadata {
         throw 'POC signing environment is partial. Supply all four WLB_POC_* signing values or clear all four and use android-app\keystore.properties.'
     }
 
+    $PasswordEnvironmentName = $null
     if ($PresentEnvironmentNames.Count -eq $EnvironmentNames.Count) {
         $StorePath = $EnvironmentValues['WLB_POC_KEYSTORE_PATH']
         $Alias = $EnvironmentValues['WLB_POC_KEY_ALIAS']
+        $PasswordEnvironmentName = 'WLB_POC_KEYSTORE_PASSWORD'
     }
     else {
         $PropertiesPath = Join-Path $AndroidRoot 'keystore.properties'
@@ -204,6 +206,7 @@ function Get-SigningMetadata {
     return [pscustomobject]@{
         Path = $ResolvedPath
         Alias = $Alias
+        PasswordEnvironmentName = $PasswordEnvironmentName
     }
 }
 
@@ -540,13 +543,20 @@ $CertificatePath = Join-Path `
     ('wlb-poc-signing-' + [guid]::NewGuid().ToString('N') + '.der')
 
 try {
-    Invoke-CheckedCommand -Command $KeyTool -Arguments @(
+    $CertificateArguments = @(
         '-exportcert',
         '-storetype', 'PKCS12',
         '-keystore', $Signing.Path,
-        '-alias', $Signing.Alias,
-        '-file', $CertificatePath
+        '-alias', $Signing.Alias
     )
+    if (-not [string]::IsNullOrWhiteSpace($Signing.PasswordEnvironmentName)) {
+        $CertificateArguments += '-storepass:env'
+        $CertificateArguments += $Signing.PasswordEnvironmentName
+    }
+    $CertificateArguments += '-file'
+    $CertificateArguments += $CertificatePath
+
+    Invoke-CheckedCommand -Command $KeyTool -Arguments $CertificateArguments
 
     $ExpectedCertificateSha256 = (
         Get-FileHash -LiteralPath $CertificatePath -Algorithm SHA256
