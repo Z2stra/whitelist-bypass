@@ -75,10 +75,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          if [[ ! -x ./build-android.sh ]]; then
+            echo "build-android.sh must remain executable because make-release.sh invokes it directly"
+            exit 1
+          fi
+
           rm -f prebuilts/whitelist-bypass.apk
 
           set +e
-          output="$(sh ./build-android.sh 2>&1)"
+          output="$(./build-android.sh 2>&1)"
           status=$?
           set -e
 
