@@ -70,3 +70,29 @@ jobs:
           done
 
           exit "$failed"
+
+      - name: Verify legacy Android release export fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f prebuilts/whitelist-bypass.apk
+
+          set +e
+          output="$(sh ./build-android.sh 2>&1)"
+          status=$?
+          set -e
+
+          if [[ $status -eq 0 ]]; then
+            echo "build-android.sh unexpectedly exported an Android release artifact"
+            exit 1
+          fi
+          if ! grep -Fq "Android production release signing is not configured." <<<"$output" ||
+              ! grep -Fq "Refusing to copy an unsigned app-release.apk" <<<"$output"; then
+            printf '%s\n' "$output"
+            echo "build-android.sh failed for an unexpected reason"
+            exit 1
+          fi
+          if [[ -e prebuilts/whitelist-bypass.apk ]]; then
+            echo "Legacy Android release path left a distributable-looking APK"
+            exit 1
+          fi
