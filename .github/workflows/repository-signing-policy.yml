@@ -38,3 +38,35 @@ jobs:
             printf '%s\n' "$tracked"
             exit 1
           fi
+
+      - name: Verify generated build outputs stay ignored
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          generated_paths=(
+            relay/relay-darwin-amd64
+            relay/relay-darwin-arm64
+            relay/relay-windows-x64.exe
+            relay/relay-windows-ia32.exe
+            relay/relay-linux-x64
+            relay/relay-linux-ia32
+            headless/headless-vk-darwin-amd64
+            headless/headless-vk-windows-x64.exe
+            headless/headless-telemost-linux-x64
+            headless/headless-wbstream-windows-ia32.exe
+            headless/headless-dion-linux-ia32
+            headless/vk-bot/headless-vk-bot
+            headless/vk-bot/headless-vk-bot.exe
+            prebuilts/stage-windows-x64/example.exe
+          )
+
+          failed=0
+          for path in "${generated_paths[@]}"; do
+            if ! git check-ignore --no-index -q "$path"; then
+              echo "Generated build output is not ignored: $path"
+              failed=1
+            fi
+          done
+
+          exit "$failed"
