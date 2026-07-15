@@ -35,11 +35,12 @@ All notable project changes made as part of the staged control-plane work are re
 - Strengthened the unsigned-release regression to require a structurally valid APK, the pinned expected unsigned diagnostic and no reported signer certificate.
 - Changed `build-android.sh` to fail closed instead of copying the unsigned `app-release.apk` into the distributable-looking `prebuilts/whitelist-bypass.apk`; `make-release.sh` therefore stops until a separate production Android signing design exists.
 - Added a repository-wide regression that verifies the legacy Android release-export script returns the expected signing-policy error and leaves no APK.
-- Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths; required-check enforcement remains a GitHub ruleset/branch-protection operator task.
+- Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths, and configured its `tracked-signing-material` job as a required `main` status check.
 - Added a repository-wide regression that verifies representative relay, cross-platform headless and VK-bot build outputs remain ignored even when a build script exits before cleanup.
 - Clarified that Gradle enforces only the build-number range; monotonically increasing live numbers and immutable release-directory names must be enforced by the future versioned bundle builder.
 - Added `tools/preserve-poc-signing-smoke.ps1`, which requires a clean source tree, pins commit/tree provenance, refuses reused output directories, verifies the copied APK signer/package/version/debuggable state and writes UTF-8 no-BOM manifests from actual APK evidence.
-- Added Android CI syntax parsing for the PowerShell signing-smoke helper.
+- Added Android CI syntax parsing and a real Windows end-to-end workflow for the PowerShell signing-smoke helper.
+- Made APK package/version parsing case-sensitive so Windows PowerShell cannot mistake `platformBuildVersionCode/Name` for the leading APK `versionCode/versionName` fields.
 - Expanded project, Android and Creator ignore rules for local secrets, signing files, additional PKCS/key containers, all known build-script output families, runtime profiles and versioned live bundles.
 
 ### Creator VK transport security
@@ -57,7 +58,7 @@ All notable project changes made as part of the staged control-plane work are re
 - Added stream line buffering and regression tests for split output chunks, terminal flush, typed renderer state and bot replies.
 - Added an explicit `--vk-poc-only` runtime mode for the mandatory official VK transport proof.
 - Added a strict `WLB-POC/1 PING` parser and correlated `PONG` formatter with bounded base64url fields.
-- Routed POC-only messages before keyboard payload, join-link and legacy command parsing, eliminating operational fallback in POC mode.
+- Routed POC-only messages before keyboard payload, link and command parsing, eliminating operational fallback in POC mode.
 - Added negative, transport-failure, safe-logging and static isolation regression tests for the POC handler.
 
 ### Creator Electron trust boundary
@@ -110,4 +111,3 @@ All notable project changes made as part of the staged control-plane work are re
 - Platform sessions remain in the persistent Chromium profile, and proxy credentials are still visible transiently in child-process command-line arguments to legacy Go binaries.
 - Creator dependency audit findings remain a separate dependency-upgrade task; no automatic `npm audit fix` was applied.
 - The historical repository debug key remains publicly recoverable and must never be trusted again, even after deletion from the current tree.
-- The repository signing-material workflow runs on every pull request, but making it a required `main` status check remains an explicit repository-rules operator task.
