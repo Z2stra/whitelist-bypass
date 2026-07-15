@@ -348,7 +348,7 @@ Do not distribute the unsigned release APK. Live POC testing uses only the signe
 
 The local signing/update smoke is allowed before the versioned live-bundle milestone, but its APKs must be copied out of Gradle-owned output immediately.
 
-From `android-app`, create new non-existing directories under the ignored repository-level `local-artifacts` directory:
+From `android-app`, reserve two new paths under the ignored repository-level `local-artifacts` directory. Do not create or reuse either version directory until its corresponding build has succeeded:
 
 ```powershell
 $RepoRoot = (Resolve-Path ..).Path
@@ -360,16 +360,19 @@ foreach ($Directory in @($Poc1Dir, $Poc2Dir)) {
   if (Test-Path -LiteralPath $Directory) {
     throw "Refusing to reuse existing smoke artifact directory: $Directory"
   }
-  New-Item -ItemType Directory -Path $Directory | Out-Null
 }
 ```
 
-Build and preserve iteration 1:
+Build iteration 1, then create its immutable local directory and copy the result:
 
 ```powershell
 $env:WLB_POC_BUILD_NUMBER = '1'
 .\gradlew.bat --no-daemon :app:assemblePoc
+if ($LASTEXITCODE -ne 0) {
+  throw 'poc.1 build failed'
+}
 
+New-Item -ItemType Directory -Path $Poc1Dir | Out-Null
 $Poc1Apk = Join-Path $Poc1Dir 'whitelist-bypass-0.3.7-poc.1.apk'
 Copy-Item `
   .\app\build\outputs\apk\poc\app-poc.apk `
@@ -378,12 +381,16 @@ Copy-Item `
 $Poc1Hash = (Get-FileHash $Poc1Apk -Algorithm SHA256).Hash
 ```
 
-Build and preserve iteration 2 with the same key:
+Build iteration 2 with the same key, then preserve it separately:
 
 ```powershell
 $env:WLB_POC_BUILD_NUMBER = '2'
 .\gradlew.bat --no-daemon :app:assemblePoc
+if ($LASTEXITCODE -ne 0) {
+  throw 'poc.2 build failed'
+}
 
+New-Item -ItemType Directory -Path $Poc2Dir | Out-Null
 $Poc2Apk = Join-Path $Poc2Dir 'whitelist-bypass-0.3.7-poc.2.apk'
 Copy-Item `
   .\app\build\outputs\apk\poc\app-poc.apk `
@@ -392,7 +399,28 @@ Copy-Item `
 $Poc2Hash = (Get-FileHash $Poc2Apk -Algorithm SHA256).Hash
 ```
 
-Write public local manifests without secrets:
+Export the public certificate again for the local manifests. This remains independent of any earlier shell variables:
+
+```powershell
+$ManifestCertificate = Join-Path $env:TEMP 'wlb-poc-manifest-cert.der'
+Remove-Item $ManifestCertificate -Force -ErrorAction SilentlyContinue
+
+keytool.exe -exportcert `
+  -storetype PKCS12 `
+  -keystore D:\wlb-secrets\wlb-poc.keystore `
+  -alias wlb-poc `
+  -file $ManifestCertificate
+if ($LASTEXITCODE -ne 0) {
+  throw 'Could not export the manifest signing certificate'
+}
+
+$ManifestCertSha256 = (
+  Get-FileHash $ManifestCertificate -Algorithm SHA256
+).Hash.ToLowerInvariant()
+Remove-Item $ManifestCertificate -Force
+```
+
+Write public UTF-8 local manifests without secrets:
 
 ```powershell
 $Commit = (git rev-parse HEAD).Trim()
@@ -403,8 +431,10 @@ $Commit = (git rev-parse HEAD).Trim()
   gitCommit = $Commit
   apk = (Split-Path $Poc1Apk -Leaf)
   apkSha256 = $Poc1Hash
-  certificateSha256 = $ExpectedCertSha256
-} | ConvertTo-Json | Set-Content (Join-Path $Poc1Dir 'BUILD-MANIFEST.json')
+  certificateSha256 = $ManifestCertSha256
+} | ConvertTo-Json | Set-Content `
+  -Encoding UTF8 `
+  (Join-Path $Poc1Dir 'BUILD-MANIFEST.json')
 
 @{
   version = '0.3.7-poc.2'
@@ -412,8 +442,10 @@ $Commit = (git rev-parse HEAD).Trim()
   gitCommit = $Commit
   apk = (Split-Path $Poc2Apk -Leaf)
   apkSha256 = $Poc2Hash
-  certificateSha256 = $ExpectedCertSha256
-} | ConvertTo-Json | Set-Content (Join-Path $Poc2Dir 'BUILD-MANIFEST.json')
+  certificateSha256 = $ManifestCertSha256
+} | ConvertTo-Json | Set-Content `
+  -Encoding UTF8 `
+  (Join-Path $Poc2Dir 'BUILD-MANIFEST.json')
 ```
 
 Re-run the APK signature, certificate, package/version and non-debuggable checks against both `$Poc1Apk` and `$Poc2Apk`, not against the mutable `app/build` path.
