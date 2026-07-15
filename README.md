@@ -83,7 +83,7 @@ Three forms are available; pick whichever fits the device:
 - **iOS** - install `whitelist-bypass-proxy.ipa` from [Releases](../../releases) (sideload via AltStore / Sideloadly / your dev account). Exposes a local SOCKS5 proxy only - no system VPN. To proxy the whole device, point any SOCKS5-capable VPN app (Shadowrocket, Streisand, ...) at the SOCKS5 endpoint the app shows; or set the proxy per app (Telegram has built-in support).
 - **Linux desktop** - run a headless joiner; it exposes a SOCKS5 proxy on the given port for whatever you point at it. Useful for servers and Linux clients. Optional `--socks-user` / `--socks-pass` enable SOCKS5 username/password auth.
   - WB Stream: `headless-wbstream-joiner --room <link> --socks-port 1080 [--socks-user u --socks-pass p]`
-  - Telemost: `headless-telemost-joiner --tm-link <link> --socks-port 1080 [--socks-user u --socks-pass p]`
+  - Telemost: `headless-telemost-joiner --tm-link <uri> --socks-port 1080 [--socks-user u --socks-pass p]`
 
 The full step-by-step (Russian) covers each platform in detail: see [docs/SETUP.md](docs/SETUP.md).
 
@@ -98,16 +98,38 @@ The full step-by-step (Russian) covers each platform in detail: see [docs/SETUP.
 - Java 11+
 - Node.js 18+
 
+### Android signing status
+
+Production Android release signing is intentionally not configured in the current source tree. `build-android.sh` and therefore `make-release.sh` refuse to copy the unsigned `app-release.apk` into `prebuilts/whitelist-bypass.apk`.
+
+Use one of the explicit paths instead:
+
+```sh
+# Local development APK (machine-local debug key)
+cd android-app
+./gradlew assembleDebug
+```
+
+For the persistent-key POC signing/update smoke on the trusted Windows build machine, use:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\preserve-poc-signing-smoke.ps1
+```
+
+Do not distribute the unsigned `release` variant. POC delivery is signed APK-only; POC AAB production is unsupported.
+
 ### Build scripts
 
 ```sh
-# Full release build (Android APK + Creator app + Headless creators + Linux joiners + VK bot + iOS IPA on macOS)
+# Full release build. Currently stops at the fail-closed Android signing gate
+# until a separate production Android signing design is implemented.
 ./make-release.sh
 
 # Individual builds
 ./build-go.sh          # Go .aar, relay binary, headless creators
 ./copy-hooks.sh        # Copy JS hooks to android assets
-./build-app.sh         # Android APK
+./build-android.sh     # Intentionally refuses unsigned production APK export
 ./build-headless.sh    # Headless binaries only (current platform)
 ./build-cli.sh         # Per-arch zips of headless creators + joiners + vk-bot
 ./build-creator.sh     # Creator Electron app (all platforms)
@@ -134,7 +156,7 @@ Output in `prebuilts/`:
 | `WhitelistBypass Creator-*-x64.exe` | Windows x64 |
 | `WhitelistBypass Creator-*-ia32.exe` | Windows x86 |
 | `WhitelistBypass Creator-*.AppImage` | Linux x64 |
-| `whitelist-bypass.apk` | Android |
+| `whitelist-bypass.apk` | Android (only from a configured signed release pipeline; not emitted by the current source build) |
 | `whitelist-bypass-proxy.ipa` | iOS, unsigned |
 | `headless-vk-creator-linux-x64` | Linux x64 |
 | `headless-vk-creator-linux-ia32` | Linux x86 |
@@ -144,18 +166,16 @@ Output in `prebuilts/`:
 | `headless-wbstream-joiner-linux-ia32` | Linux x86 |
 | `headless-telemost-joiner-linux-x64` | Linux x64 |
 | `headless-telemost-joiner-linux-ia32` | Linux x86 |
-| `headless-vk-bot-linux-x64` | Linux x64 |
-| `headless-vk-bot-linux-ia32` | Linux x86 |
 
 ### Docker build
 
 To build the project using Docker, execute:
 
 ```sh
-docker compose -f docker-build/docker-compose.yml up 
+docker compose -f docker-build/docker-compose.yml up
 ```
 
-This will build all components (creator-app, headless, android app) into the `prebuild` folder (except the macOS creator)
+This build path also reaches the fail-closed Android release-signing gate until production Android signing is configured.
 
 ### Headless creators
 
@@ -188,7 +208,7 @@ WB Stream uses anonymous guest tokens, so no cookies are required. VK and Telemo
 | `--resources <mode>` | yes | yes | yes | `default` / `moderate` / `unlimited` / `custom` (see below) |
 | `--read-buf <bytes>` | yes | yes | yes | DC/RTP read buffer; only consulted with `--resources custom` |
 | `--max-dc-buf <bytes>` | yes | - | - | DataChannel `BufferedAmountLowThreshold`; only with `--resources custom` |
-| `--mem-limit <bytes>` | yes | yes | yes | Go soft memory limit (`debug.SetMemoryLimit`); only with `--resources custom` |
+| `--mem-limit <bytes>` | yes | yes | yes | Go soft memory limit (`debug.SetMemoryLimit`); makes GC more aggressive near the cap |
 
 #### Joining an existing call
 
