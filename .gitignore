@@ -152,22 +152,28 @@ coverage*.out
 /relay/mobile.aar
 /relay/mobile-sources.jar
 
+# Relay outputs from local and cross-platform build scripts. The broad rule is
+# intentional because build-creator.sh can exit before its final cleanup step.
 /relay/relay
 /relay/relay.exe
-/relay/relay-bundle
-/relay/relay-bundle.exe
-/relay/relay-darwin
+/relay/relay-*
 
 # Creator packaging inputs generated from the Go modules
 /headless/headless-*-bundle
 /headless/headless-*-bundle.exe
-/headless/headless-*-darwin
 
-# Module-local compiled creator/joiner binaries
+# Root-level cross-platform outputs produced by build-creator.sh
+/headless/headless-*-darwin*
+/headless/headless-*-windows-*.exe
+/headless/headless-*-linux-*
+
+# Module-local compiled creator/joiner/bot binaries
 /headless/*/headless-*-creator
 /headless/*/headless-*-creator.exe
 /headless/*/headless-*-joiner
 /headless/*/headless-*-joiner.exe
+/headless/vk-bot/headless-vk-bot
+/headless/vk-bot/headless-vk-bot.exe
 
 
 # =============================================================================
