@@ -40,8 +40,9 @@ jobs:
         run: |
           $Tokens = $null
           $Errors = $null
+          $ScriptPath = (Resolve-Path 'tools/preserve-poc-signing-smoke.ps1').Path
           [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path 'tools/preserve-poc-signing-smoke.ps1'),
+            $ScriptPath,
             [ref]$Tokens,
             [ref]$Errors
           ) | Out-Null
