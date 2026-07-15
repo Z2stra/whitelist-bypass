@@ -192,9 +192,10 @@ jobs:
                 $Manifest.certificateSha256 -notmatch '^[0-9a-f]{64}$') {
               throw "Manifest digest format mismatch: $ManifestPath"
             }
+            $ParsedTime = [DateTime]::MinValue
             if (-not [DateTime]::TryParse(
                 [string]$Manifest.builtAtUtc,
-                [ref]([DateTime]$ParsedTime = [DateTime]::MinValue))) {
+                [ref]$ParsedTime)) {
               throw "Manifest builtAtUtc is invalid: $ManifestPath"
             }
 
