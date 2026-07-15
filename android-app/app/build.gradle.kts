@@ -68,7 +68,7 @@ fun requirePocBuildNumber(): Int {
     if (value == null || value !in 1..999) {
         throw GradleException(
             "Signed POC packaging requires WLB_POC_BUILD_NUMBER from 1 to 999; " +
-                "use a strictly increasing value for every live APK",
+                "never reuse or decrease an accepted live build number",
         )
     }
     return value
