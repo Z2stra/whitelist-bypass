@@ -32,7 +32,6 @@ jobs:
     timeout-minutes: 90
     env:
       ANDROID_BUILD_TOOLS_VERSION: "36.0.0"
-      WLB_POC_KEYSTORE_PATH: ${{ runner.temp }}\wlb-ci-poc.keystore
       WLB_POC_KEYSTORE_PASSWORD: ci-only-poc-password
       WLB_POC_KEY_ALIAS: wlb-ci-poc
       WLB_POC_KEY_PASSWORD: ci-only-poc-password
@@ -117,6 +116,12 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $env:WLB_POC_KEYSTORE_PATH = Join-Path `
+            $env:RUNNER_TEMP `
+            'wlb-ci-poc.keystore'
+          "WLB_POC_KEYSTORE_PATH=$env:WLB_POC_KEYSTORE_PATH" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
           $Stdout = Join-Path $env:RUNNER_TEMP 'poc-keytool.stdout.log'
           $Stderr = Join-Path $env:RUNNER_TEMP 'poc-keytool.stderr.log'
           $Arguments = @(
@@ -401,10 +406,12 @@ jobs:
         if: always()
         shell: powershell
         run: |
-          Remove-Item `
-            $env:WLB_POC_KEYSTORE_PATH `
-            -Force `
-            -ErrorAction SilentlyContinue
+          if (-not [string]::IsNullOrWhiteSpace($env:WLB_POC_KEYSTORE_PATH)) {
+            Remove-Item `
+              $env:WLB_POC_KEYSTORE_PATH `
+              -Force `
+              -ErrorAction SilentlyContinue
+          }
           Remove-Item `
             (Join-Path $env:RUNNER_TEMP 'wlb-ci-poc.cer') `
             -Force `
