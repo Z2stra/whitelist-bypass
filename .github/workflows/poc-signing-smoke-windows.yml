@@ -92,6 +92,7 @@ jobs:
           $env:WLB_POC_KEYSTORE_PATH = Join-Path `
             $env:RUNNER_TEMP `
             'wlb-ci-poc.keystore'
+          $LogPath = Join-Path $env:RUNNER_TEMP 'poc-signing-helper.log'
 
           & keytool.exe -genkeypair `
             -noprompt `
@@ -108,15 +109,16 @@ jobs:
             throw 'Disposable Windows POC key generation failed'
           }
 
-          $Output = & powershell.exe `
+          $Output = @(& powershell.exe `
             -NoProfile `
             -ExecutionPolicy Bypass `
             -File .\tools\preserve-poc-signing-smoke.ps1 `
             -FirstBuildNumber 901 `
             -SecondBuildNumber 902 `
             -BuildToolsVersion $env:ANDROID_BUILD_TOOLS_VERSION `
-            -SkipQualityChecks 2>&1
+            -SkipQualityChecks 2>&1)
           $ExitCode = $LASTEXITCODE
+          $Output | Set-Content -LiteralPath $LogPath -Encoding UTF8
           $Output | ForEach-Object { Write-Host $_ }
 
           if ($ExitCode -ne 0) {
@@ -219,6 +221,15 @@ jobs:
           if (@($CertificateDigests | Sort-Object -Unique).Count -ne 1) {
             throw 'poc.901 and poc.902 do not use the same signing certificate'
           }
+
+      - name: Upload sanitized helper diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-poc-signing-helper-diagnostics-${{ github.sha }}
+          retention-days: 3
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/poc-signing-helper.log
 
       - name: Clean disposable signing material and local artifacts
         if: always()
