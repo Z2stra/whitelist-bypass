@@ -26,6 +26,8 @@ jobs:
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      ANDROID_BUILD_TOOLS_VERSION: "36.0.0"
 
     steps:
       - name: Checkout
@@ -43,14 +45,22 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK 36
+      - name: Install pinned Android SDK tools
         shell: bash
         run: |
+          set -euo pipefail
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager \
             "platform-tools" \
             "platforms;android-36" \
-            "build-tools;36.0.0"
+            "build-tools;$ANDROID_BUILD_TOOLS_VERSION"
+
+          build_tools="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION"
+          if [[ ! -x "$build_tools/aapt" || ! -x "$build_tools/apksigner" ]]; then
+            echo "Pinned Android build-tools $ANDROID_BUILD_TOOLS_VERSION are unavailable"
+            exit 1
+          fi
+          echo "WLB_ANDROID_BUILD_TOOLS=$build_tools" >> "$GITHUB_ENV"
 
       - name: Make Gradle wrapper executable
         working-directory: android-app
@@ -123,12 +133,7 @@ jobs:
           # A stale partial POC environment must not break the complete Android DoD.
           "${partial_env[@]}" ./gradlew --no-daemon test lint assembleDebug
 
-          aapt="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
-          if [[ -z "$aapt" ]]; then
-            echo "aapt was not found"
-            exit 1
-          fi
-
+          aapt="$WLB_ANDROID_BUILD_TOOLS/aapt"
           base_identity="$("${partial_env[@]}" ./gradlew --no-daemon -q :app:printBaseIdentity)"
           expected_package="$(sed -n 's/^WLB_BASE_APPLICATION_ID=//p' <<<"$base_identity" | tail -n 1)"
           expected_version_code="$(sed -n 's/^WLB_BASE_VERSION_CODE=//p' <<<"$base_identity" | tail -n 1)"
@@ -211,21 +216,37 @@ jobs:
 
           ./gradlew --no-daemon :app:assembleRelease
           release_apk="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
-          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          aapt="$WLB_ANDROID_BUILD_TOOLS/aapt"
+          apksigner="$WLB_ANDROID_BUILD_TOOLS/apksigner"
 
-          if [[ -z "$release_apk" || -z "$apksigner" ]]; then
-            echo "Release APK or apksigner was not found"
+          if [[ -z "$release_apk" ]]; then
+            echo "Release APK was not found"
+            exit 1
+          fi
+
+          if ! "$aapt" dump badging "$release_apk" > "$diagnostics/release-aapt.txt"; then
+            echo "Release APK is not a structurally valid APK"
             exit 1
           fi
 
           set +e
-          verify_output="$("$apksigner" verify "$release_apk" 2>&1)"
+          verify_output="$("$apksigner" verify --verbose --print-certs "$release_apk" 2>&1)"
           status=$?
           set -e
           printf '%s\n' "$verify_output" > "$diagnostics/release-apksigner.txt"
 
           if [[ $status -eq 0 ]]; then
             echo "Release APK unexpectedly contains a valid signing identity"
+            exit 1
+          fi
+          if ! grep -Fq "DOES NOT VERIFY" <<<"$verify_output" ||
+              ! grep -Fq "Missing META-INF/MANIFEST.MF" <<<"$verify_output"; then
+            printf '%s\n' "$verify_output"
+            echo "Release verification failed for an unexpected reason"
+            exit 1
+          fi
+          if grep -Eq 'certificate SHA-256 digest:' <<<"$verify_output"; then
+            echo "Unsigned release unexpectedly reports a signer certificate"
             exit 1
           fi
 
@@ -253,12 +274,8 @@ jobs:
           diagnostics="app/build/reports/poc-signing-gate"
           mkdir -p "$diagnostics"
           apk="app/build/outputs/apk/poc/app-poc.apk"
-          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
-          aapt="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
-          if [[ -z "$apksigner" || -z "$aapt" ]]; then
-            echo "Android APK verification tools were not found"
-            exit 1
-          fi
+          apksigner="$WLB_ANDROID_BUILD_TOOLS/apksigner"
+          aapt="$WLB_ANDROID_BUILD_TOOLS/aapt"
 
           keytool -exportcert \
             -storetype PKCS12 \
@@ -333,8 +350,8 @@ jobs:
           ./gradlew --no-daemon :app:assemblePoc
 
           apk="app/build/outputs/apk/poc/app-poc.apk"
-          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
-          aapt="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
+          apksigner="$WLB_ANDROID_BUILD_TOOLS/apksigner"
+          aapt="$WLB_ANDROID_BUILD_TOOLS/aapt"
           keytool -exportcert \
             -storetype PKCS12 \
             -keystore "${{ runner.temp }}/wlb-ci-poc.keystore" \
