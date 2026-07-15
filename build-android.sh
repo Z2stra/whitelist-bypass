@@ -1,24 +1,17 @@
 #!/bin/sh
-set -e
+set -eu
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-cd "$ROOT/android-app"
+cat >&2 <<'EOF'
+Android production release signing is not configured.
+Refusing to copy an unsigned app-release.apk to prebuilts/whitelist-bypass.apk.
 
-[ -f "./gradlew" ] || { echo "gradlew not found"; exit 1; }
+For a local development APK:
+  cd android-app && ./gradlew assembleDebug
 
-echo "Cleaning..."
-find app/build -name .DS_Store -delete 2>/dev/null || true # dont fail trying to clean last build!
-./gradlew clean 2>&1 | tail -3
+For the persistent-key POC signing/update smoke on the trusted Windows build machine:
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\preserve-poc-signing-smoke.ps1
 
-echo "Building release APK..."
-./gradlew assembleRelease 2>&1 | tail -5
+Do not distribute the unsigned release variant.
+EOF
 
-APK="app/build/outputs/apk/release/app-release.apk"
-if [ -f "$APK" ]; then
-    mkdir -p "$ROOT/prebuilts"
-    cp "$APK" "$ROOT/prebuilts/whitelist-bypass.apk"
-    echo "APK ready: prebuilts/whitelist-bypass.apk ($(du -h "$ROOT/prebuilts/whitelist-bypass.apk" | cut -f1))"
-else
-    echo "Build failed, APK not found"
-    exit 1
-fi
+exit 1
