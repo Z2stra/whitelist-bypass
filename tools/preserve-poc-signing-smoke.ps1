@@ -9,7 +9,10 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$BuildToolsVersion = '36.0.0',
 
-    [switch]$SkipQualityChecks
+    [switch]$SkipQualityChecks,
+
+    # CI-only regression path. It never builds or signs an APK.
+    [switch]$RunAcceptanceRollbackSelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -73,7 +76,7 @@ function Invoke-NativeCommand {
     }
 
     if ($CaptureOutput) {
-        return $Output
+        return @($Output | ForEach-Object { $_.ToString() })
     }
 
     $Output | ForEach-Object { Write-Host $_ }
@@ -89,8 +92,7 @@ function Get-GitOutput {
         Invoke-NativeCommand `
             -Command $script:Git `
             -Arguments (@('-C', $RepoRoot) + $Arguments) `
-            -CaptureOutput |
-            ForEach-Object { $_.ToString() }
+            -CaptureOutput
     )
 }
 
@@ -133,113 +135,45 @@ function Assert-SourceUnchanged {
     }
 }
 
-function Read-PropertiesValue {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]]$Lines,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Name
-    )
-
-    $Pattern = '^\s*' + [regex]::Escape($Name) + '\s*=\s*(.*)\s*$'
-    foreach ($Line in $Lines) {
-        $Match = [regex]::Match($Line, $Pattern)
-        if ($Match.Success) {
-            return $Match.Groups[1].Value.Trim()
-        }
-    }
-
-    return $null
-}
-
-function Convert-PropertiesPath {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Value
-    )
-
-    $Backslash = [string][char]92
-    return $Value.Replace($Backslash + $Backslash, $Backslash).Replace($Backslash + ':', ':')
-}
-
-function Get-SigningMetadata {
+function Get-SigningEnvironment {
     $EnvironmentNames = @(
         'WLB_POC_KEYSTORE_PATH',
         'WLB_POC_KEYSTORE_PASSWORD',
         'WLB_POC_KEY_ALIAS',
         'WLB_POC_KEY_PASSWORD'
     )
-    $EnvironmentValues = @{}
+    $Values = @{}
     foreach ($Name in $EnvironmentNames) {
-        $EnvironmentValues[$Name] = [Environment]::GetEnvironmentVariable($Name)
+        $Values[$Name] = [Environment]::GetEnvironmentVariable($Name)
     }
 
-    $PresentEnvironmentNames = @(
+    $Missing = @(
         $EnvironmentNames |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($EnvironmentValues[$_]) }
+            Where-Object { [string]::IsNullOrWhiteSpace($Values[$_]) }
     )
-
-    if ($PresentEnvironmentNames.Count -gt 0 -and
-        $PresentEnvironmentNames.Count -ne $EnvironmentNames.Count) {
-        throw 'POC signing environment is partial. Supply all four WLB_POC_* signing values or clear all four and use android-app\keystore.properties.'
-    }
-
-    $StorePassword = $null
-    $StorePasswordEnvironmentName = $null
-    if ($PresentEnvironmentNames.Count -eq $EnvironmentNames.Count) {
-        $StorePath = $EnvironmentValues['WLB_POC_KEYSTORE_PATH']
-        $Alias = $EnvironmentValues['WLB_POC_KEY_ALIAS']
-        $StorePasswordEnvironmentName = 'WLB_POC_KEYSTORE_PASSWORD'
-    }
-    else {
-        $PropertiesPath = Join-Path $AndroidRoot 'keystore.properties'
-        if (-not (Test-Path -LiteralPath $PropertiesPath -PathType Leaf)) {
-            throw 'POC signing is not configured. Set all four WLB_POC_* signing variables or create android-app\keystore.properties.'
-        }
-
-        $Lines = Get-Content -LiteralPath $PropertiesPath
-        $PropertyNames = @(
-            'wlb.poc.storeFile',
-            'wlb.poc.storePassword',
-            'wlb.poc.keyAlias',
-            'wlb.poc.keyPassword'
+    if ($Missing.Count -ne 0) {
+        throw (
+            'The canonical signing helper requires all four WLB_POC_* signing ' +
+            'environment variables. Direct Gradle builds may use the ignored ' +
+            'android-app\keystore.properties fallback, but this helper deliberately ' +
+            'does not implement a second Java-properties parser. Missing: {0}' -f `
+            ($Missing -join ', ')
         )
-        $PropertyValues = @{}
-        foreach ($Name in $PropertyNames) {
-            $PropertyValues[$Name] = Read-PropertiesValue -Lines $Lines -Name $Name
-        }
-
-        $MissingProperties = @(
-            $PropertyNames |
-                Where-Object { [string]::IsNullOrWhiteSpace($PropertyValues[$_]) }
-        )
-        if ($MissingProperties.Count -ne 0) {
-            throw ('keystore.properties is missing: {0}' -f ($MissingProperties -join ', '))
-        }
-
-        $StorePath = Convert-PropertiesPath $PropertyValues['wlb.poc.storeFile']
-        $Alias = $PropertyValues['wlb.poc.keyAlias']
-        $StorePassword = $PropertyValues['wlb.poc.storePassword']
     }
 
-    $CandidatePath = if ([System.IO.Path]::IsPathRooted($StorePath)) {
-        $StorePath
-    }
-    else {
-        Join-Path $AndroidRoot $StorePath
+    $CandidatePath = $Values['WLB_POC_KEYSTORE_PATH']
+    if (-not [System.IO.Path]::IsPathRooted($CandidatePath)) {
+        $CandidatePath = Join-Path $RepoRoot $CandidatePath
     }
     $ResolvedPath = [System.IO.Path]::GetFullPath($CandidatePath)
-
     if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Leaf)) {
         throw ('POC keystore does not exist: {0}' -f $ResolvedPath)
     }
 
     return [pscustomobject]@{
         Path = $ResolvedPath
-        Alias = $Alias
-        StorePassword = $StorePassword
-        StorePasswordEnvironmentName = $StorePasswordEnvironmentName
+        Alias = $Values['WLB_POC_KEY_ALIAS']
+        StorePasswordEnvironmentName = 'WLB_POC_KEYSTORE_PASSWORD'
     }
 }
 
@@ -284,7 +218,7 @@ function Get-PocIdentity {
 
     $Values = @{}
     foreach ($Line in $Output) {
-        $Match = [regex]::Match($Line.ToString(), '^WLB_POC_([^=]+)=(.*)$')
+        $Match = [regex]::Match($Line, '^WLB_POC_([^=]+)=(.*)$')
         if ($Match.Success) {
             $Values[$Match.Groups[1].Value] = $Match.Groups[2].Value
         }
@@ -330,27 +264,26 @@ function Get-ApkEvidence {
             -Arguments @('verify', '--verbose', '--print-certs', $ApkPath) `
             -CaptureOutput
     )
+    $CertificateText = $CertificateOutput -join "`n"
 
-    $SignerCount = $null
-    $SignerDigests = @()
-    foreach ($Line in $CertificateOutput) {
-        $Text = $Line.ToString()
-        $CountMatch = [regex]::Match($Text, '^Number of signers:\s*(\d+)\s*$')
-        if ($CountMatch.Success) {
-            $SignerCount = [int]$CountMatch.Groups[1].Value
-        }
+    $SignerCountMatch = [regex]::Match(
+        $CertificateText,
+        '(?m)^Number of signers:\s*(\d+)\s*$'
+    )
+    $SignerDigests = @(
+        [regex]::Matches(
+            $CertificateText,
+            '(?m)^(?:Signer #\d+|.*Signer):?\s+certificate SHA-256 digest:\s*(\S+)\s*$'
+        ) |
+            ForEach-Object {
+                $_.Groups[1].Value.Replace(':', '').ToLowerInvariant()
+            } |
+            Sort-Object -Unique
+    )
 
-        $DigestMatch = [regex]::Match(
-            $Text,
-            '^(?:Signer #\d+|.*Signer):?\s+certificate SHA-256 digest:\s*(\S+)\s*$'
-        )
-        if ($DigestMatch.Success) {
-            $SignerDigests += $DigestMatch.Groups[1].Value.Replace(':', '').ToLowerInvariant()
-        }
-    }
-    $SignerDigests = @($SignerDigests | Sort-Object -Unique)
-
-    if ($SignerCount -ne 1 -or $SignerDigests.Count -ne 1) {
+    if (-not $SignerCountMatch.Success -or
+        [int]$SignerCountMatch.Groups[1].Value -ne 1 -or
+        $SignerDigests.Count -ne 1) {
         throw ('APK must contain exactly one unique signer certificate: {0}' -f $ApkPath)
     }
     if ($SignerDigests[0] -ne $ExpectedCertificateSha256) {
@@ -363,15 +296,12 @@ function Get-ApkEvidence {
             -Arguments @('dump', 'badging', $ApkPath) `
             -CaptureOutput
     )
-    $BadgingText = ($BadgingOutput | ForEach-Object { $_.ToString() }) -join "`n"
+    $BadgingText = $BadgingOutput -join "`n"
     if ($BadgingText.Contains('application-debuggable')) {
         throw ('POC APK must not be debuggable: {0}' -f $ApkPath)
     }
 
-    $PackageLine = ($BadgingOutput | Select-Object -First 1).ToString()
-    # .NET Regex is case-sensitive by default. This is intentional: PowerShell's
-    # -match is case-insensitive and could greedily capture platformBuildVersion*
-    # instead of the leading APK versionCode/versionName fields.
+    $PackageLine = $BadgingOutput | Select-Object -First 1
     $PackageMatch = [regex]::Match(
         $PackageLine,
         "^package:\s+name='([^']+)'\s+versionCode='([^']+)'\s+versionName='([^']+)'(?:\s|$)"
@@ -383,7 +313,6 @@ function Get-ApkEvidence {
     $ApplicationId = $PackageMatch.Groups[1].Value
     $VersionCode = [int64]$PackageMatch.Groups[2].Value
     $VersionName = $PackageMatch.Groups[3].Value
-
     if ($ApplicationId -ne $ExpectedIdentity.ApplicationId -or
         $VersionCode -ne $ExpectedIdentity.VersionCode -or
         $VersionName -ne $ExpectedIdentity.VersionName) {
@@ -516,13 +445,145 @@ function Build-PocIntoStaging {
     }
 }
 
+function Accept-StagedArtifactPair {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$StagedDirectories,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$FinalDirectories,
+
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Finalize,
+
+        [ValidateSet('None', 'AfterFirstMove', 'AfterSecondMove')]
+        [string]$InjectedFailurePoint = 'None'
+    )
+
+    if ($StagedDirectories.Count -ne 2 -or $FinalDirectories.Count -ne 2) {
+        throw 'Artifact acceptance requires exactly two staged and two final directories.'
+    }
+
+    $AcceptedDirectories = @()
+    $AcceptanceComplete = $false
+    try {
+        Move-Item `
+            -LiteralPath $StagedDirectories[0] `
+            -Destination $FinalDirectories[0]
+        $AcceptedDirectories += $FinalDirectories[0]
+
+        if ($InjectedFailurePoint -eq 'AfterFirstMove') {
+            throw 'Injected rollback regression after first artifact move.'
+        }
+
+        Move-Item `
+            -LiteralPath $StagedDirectories[1] `
+            -Destination $FinalDirectories[1]
+        $AcceptedDirectories += $FinalDirectories[1]
+
+        if ($InjectedFailurePoint -eq 'AfterSecondMove') {
+            throw 'Injected rollback regression after second artifact move.'
+        }
+
+        & $Finalize
+        $AcceptanceComplete = $true
+    }
+    finally {
+        if (-not $AcceptanceComplete) {
+            foreach ($Directory in $AcceptedDirectories) {
+                Remove-Item `
+                    -LiteralPath $Directory `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+function Invoke-AcceptanceRollbackSelfTest {
+    $SelfTestRoot = Join-Path `
+        $ArtifactsRoot `
+        ('.rollback-self-test-' + [guid]::NewGuid().ToString('N'))
+
+    try {
+        foreach ($Scenario in @('AfterFirstMove', 'AfterSecondMove', 'FinalizeFailure')) {
+            $ScenarioRoot = Join-Path $SelfTestRoot $Scenario
+            $StagingRoot = Join-Path $ScenarioRoot 'staging'
+            $FinalRoot = Join-Path $ScenarioRoot 'final'
+            $StagedDirectories = @(
+                Join-Path $StagingRoot 'first'
+                Join-Path $StagingRoot 'second'
+            )
+            $FinalDirectories = @(
+                Join-Path $FinalRoot 'first'
+                Join-Path $FinalRoot 'second'
+            )
+
+            New-Item -ItemType Directory -Path $StagedDirectories[0] -Force | Out-Null
+            New-Item -ItemType Directory -Path $StagedDirectories[1] -Force | Out-Null
+            New-Item -ItemType Directory -Path $FinalRoot -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $StagedDirectories[0] 'marker.txt') -Value 'first'
+            Set-Content -LiteralPath (Join-Path $StagedDirectories[1] 'marker.txt') -Value 'second'
+
+            $FailureObserved = $false
+            try {
+                $FailurePoint = if ($Scenario -eq 'FinalizeFailure') {
+                    'None'
+                }
+                else {
+                    $Scenario
+                }
+                $Finalize = if ($Scenario -eq 'FinalizeFailure') {
+                    { throw 'Injected rollback regression from final validation.' }
+                }
+                else {
+                    { }
+                }
+
+                Accept-StagedArtifactPair `
+                    -StagedDirectories $StagedDirectories `
+                    -FinalDirectories $FinalDirectories `
+                    -Finalize $Finalize `
+                    -InjectedFailurePoint $FailurePoint
+            }
+            catch {
+                $FailureObserved = $true
+            }
+
+            if (-not $FailureObserved) {
+                throw ('Rollback self-test did not inject a failure: {0}' -f $Scenario)
+            }
+            foreach ($Directory in $FinalDirectories) {
+                if (Test-Path -LiteralPath $Directory) {
+                    throw ('Rollback self-test left an accepted directory: {0}' -f $Directory)
+                }
+            }
+        }
+
+        Write-Host '[POC_SIGNING_ROLLBACK_SELF_TEST] PASS'
+    }
+    finally {
+        Remove-Item `
+            -LiteralPath $SelfTestRoot `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+}
+
+if ($RunAcceptanceRollbackSelfTest) {
+    Invoke-AcceptanceRollbackSelfTest
+    return
+}
+
 if (-not (Test-Path -LiteralPath $Gradle -PathType Leaf)) {
     throw ('Gradle wrapper was not found: {0}' -f $Gradle)
 }
 
 $script:Git = Get-RequiredCommandPath @('git.exe', 'git')
 $KeyTool = Get-RequiredCommandPath @('keytool.exe', 'keytool')
-$Signing = Get-SigningMetadata
+$Signing = Get-SigningEnvironment
 
 $SdkRoot = if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_HOME)) {
     $env:ANDROID_HOME
@@ -543,7 +604,7 @@ if (-not (Test-Path -LiteralPath $Aapt -PathType Leaf) -or
 
 $InitialStatus = @(Get-SourceStatus)
 if ($InitialStatus.Count -ne 0) {
-    throw ("Tracked/untracked source tree must be clean before POC artifact production:`n{0}" -f `
+    throw ("Tracked/non-ignored-untracked source tree must be clean before POC artifact production:`n{0}" -f `
         ($InitialStatus -join [Environment]::NewLine))
 }
 
@@ -589,28 +650,14 @@ New-Item -ItemType Directory -Path $RunStagingRoot | Out-Null
 $CertificatePath = Join-Path `
     $env:TEMP `
     ('wlb-poc-signing-' + [guid]::NewGuid().ToString('N') + '.der')
-$TemporaryPasswordEnvironmentName = $null
-$AcceptedDirectories = @()
 
 try {
-    $StorePasswordEnvironmentName = $Signing.StorePasswordEnvironmentName
-    if ([string]::IsNullOrWhiteSpace($StorePasswordEnvironmentName)) {
-        $TemporaryPasswordEnvironmentName = 'WLB_POC_KEYTOOL_STORE_PASSWORD_' + `
-            [guid]::NewGuid().ToString('N')
-        [Environment]::SetEnvironmentVariable(
-            $TemporaryPasswordEnvironmentName,
-            $Signing.StorePassword,
-            'Process'
-        )
-        $StorePasswordEnvironmentName = $TemporaryPasswordEnvironmentName
-    }
-
     $CertificateArguments = @(
         '-exportcert',
         '-storetype', 'PKCS12',
         '-keystore', $Signing.Path,
         '-alias', $Signing.Alias,
-        '-storepass:env', $StorePasswordEnvironmentName,
+        '-storepass:env', $Signing.StorePasswordEnvironmentName,
         '-file', $CertificatePath
     )
     Invoke-NativeCommand -Command $KeyTool -Arguments $CertificateArguments
@@ -650,38 +697,28 @@ try {
         }
     }
 
-    try {
-        Move-Item -LiteralPath $FirstStaged.StagedDirectory -Destination $FinalDirectories[0]
-        $AcceptedDirectories += $FinalDirectories[0]
-        Move-Item -LiteralPath $SecondStaged.StagedDirectory -Destination $FinalDirectories[1]
-        $AcceptedDirectories += $FinalDirectories[1]
-    }
-    catch {
-        foreach ($Directory in $AcceptedDirectories) {
-            Remove-Item -LiteralPath $Directory -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        throw
+    $FinalizeAcceptance = {
+        Assert-SourceUnchanged `
+            -ExpectedCommit $SourceCommit `
+            -ExpectedTree $SourceTree `
+            -Stage 'after artifact preservation'
+
+        Write-Host '[POC_SIGNING_SMOKE] PASS'
+        Write-Host ('Commit: {0}' -f $SourceCommit)
+        Write-Host ('Tree:   {0}' -f $SourceTree)
+        Write-Host ('First:  {0}' -f $FinalDirectories[0])
+        Write-Host ('Second: {0}' -f $FinalDirectories[1])
     }
 
-    Assert-SourceUnchanged `
-        -ExpectedCommit $SourceCommit `
-        -ExpectedTree $SourceTree `
-        -Stage 'after artifact preservation'
-
-    Write-Host '[POC_SIGNING_SMOKE] PASS'
-    Write-Host ('Commit: {0}' -f $SourceCommit)
-    Write-Host ('Tree:   {0}' -f $SourceTree)
-    Write-Host ('First:  {0}' -f $FinalDirectories[0])
-    Write-Host ('Second: {0}' -f $FinalDirectories[1])
+    Accept-StagedArtifactPair `
+        -StagedDirectories @(
+            $FirstStaged.StagedDirectory,
+            $SecondStaged.StagedDirectory
+        ) `
+        -FinalDirectories $FinalDirectories `
+        -Finalize $FinalizeAcceptance
 }
 finally {
-    if (-not [string]::IsNullOrWhiteSpace($TemporaryPasswordEnvironmentName)) {
-        [Environment]::SetEnvironmentVariable(
-            $TemporaryPasswordEnvironmentName,
-            $null,
-            'Process'
-        )
-    }
     if (Test-Path -LiteralPath $CertificatePath) {
         Remove-Item -LiteralPath $CertificatePath -Force
     }
