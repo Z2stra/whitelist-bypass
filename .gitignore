@@ -119,7 +119,7 @@ coverage*.out
 # electron-builder output
 /prebuilts/
 
-# Final local-only bundles copied to the separate live-test machine
+# Canonical POC signing evidence and future source-free live bundles
 /live-bundles/
 /release-bundles/
 /local-artifacts/
