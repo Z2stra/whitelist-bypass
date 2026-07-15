@@ -15,6 +15,7 @@ All notable project changes made as part of the staged control-plane work are re
 - Documented the source-free separate-machine live-test boundary and the Android POC signing/key lifecycle.
 - Distinguished the local signing/update smoke on the trusted build machine from later VK/network live tests on the separate source-free machine.
 - Replaced manual local POC manifest assembly with a checked PowerShell helper that records commit/tree provenance and derives manifest identity from the saved APK.
+- Corrected the source-build README so it no longer describes the intentionally disabled unsigned Android release path as a usable release artifact.
 
 ### Android
 
@@ -32,6 +33,8 @@ All notable project changes made as part of the staged control-plane work are re
 - Added public-CI checks that verify environment and properties through two separately numbered signed APKs, compare each APK signer certificate with a disposable generated CI key, validate Gradle-derived identities, reject debuggable POC output and confirm POC AAB production remains disabled.
 - Pinned Android APK inspection and signature verification to build-tools `36.0.0` instead of selecting the newest preinstalled runner tool.
 - Strengthened the unsigned-release regression to require a structurally valid APK, the pinned expected unsigned diagnostic and no reported signer certificate.
+- Changed `build-android.sh` to fail closed instead of copying the unsigned `app-release.apk` into the distributable-looking `prebuilts/whitelist-bypass.apk`; `make-release.sh` therefore stops until a separate production Android signing design exists.
+- Added a repository-wide regression that verifies the legacy Android release-export script returns the expected signing-policy error and leaves no APK.
 - Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths; required-check enforcement remains a GitHub ruleset/branch-protection operator task.
 - Added a repository-wide regression that verifies representative relay, cross-platform headless and VK-bot build outputs remain ignored even when a build script exits before cleanup.
 - Clarified that Gradle enforces only the build-number range; monotonically increasing live numbers and immutable release-directory names must be enforced by the future versioned bundle builder.
