@@ -8,7 +8,7 @@
 - Windows v1 host: existing Electron Creator.
 - Android client: existing `android-app` using `VpnService` and the headless Go/Pion path.
 - The unmodified Windows Creator and Android debug APK have been built and smoke-tested locally on Windows.
-- Android CI runs `test`, full `lint`, and `assembleDebug`; the previously classified non-blocking lint warnings remain tracked as technical debt.
+- Android CI runs `test`, full `lint`, and `assembleDebug`; verification tools are pinned to Android build-tools `36.0.0`, and previously classified non-blocking lint warnings remain tracked as technical debt.
 - Creator CI covers TypeScript build, static type-check, unit/regression tests, Electron renderer isolation and a Windows DPAPI protected-settings smoke on Node.js 22.
 - The merged protected-settings build completed a local first-run Windows check: Settings reported Windows DPAPI and the synthetic protected-storage smoke passed.
 - Live tests run on a separate machine that does not receive the repository, source code, Node.js, Go, Gradle or signing keys; every live iteration must use prebuilt, versioned artifacts.
@@ -71,12 +71,15 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [x] Make supported POC APK and aggregate APK packaging fail closed when signing inputs or the keystore are unavailable.
 - [x] Explicitly reject POC Android App Bundle production; live POC delivery is APK-only.
 - [x] Verify public-CI signing with a disposable key, exact APK signer-certificate matching, Gradle-derived identity, non-debuggable output and both environment/properties APK input paths.
-- [x] Verify that the ordinary release APK remains unsigned.
+- [x] Pin Android verification to build-tools `36.0.0` and accept only the expected unsigned-release diagnostic after structural APK validation.
+- [x] Verify that the ordinary release APK remains structurally valid but unsigned.
 - [x] Run a repository-wide tracked-signing-material workflow on every pull request regardless of changed paths.
+- [x] Keep all known relay/headless build-script outputs ignored and regression-test representative paths with `git check-ignore`.
 - [ ] Require `Repository signing-material policy / tracked-signing-material` before merging to `main` through GitHub branch protection or a ruleset.
 - [x] Expand `.gitignore` coverage for signing material, local configuration, build output and live bundles.
+- [x] Add `tools/preserve-poc-signing-smoke.ps1` to build from a clean source tree, pin commit/tree provenance, verify saved APK evidence and write UTF-8 no-BOM manifests under ignored `local-artifacts`.
 - [ ] Create and securely back up the persistent private POC keystore on the trusted build machine.
-- [ ] Build the first locally signed POC APK and verify its public certificate fingerprint and SHA-256.
+- [ ] Run the local signing helper with the persistent key and verify the resulting `poc.1`/`poc.2` manifests, certificate fingerprint and APK SHA-256 values.
 - [ ] Verify local first install and subsequent in-place APK update on the physical POC device using the same POC key.
 - [ ] Implement the reproducible versioned live-test bundle for Creator, Android, manifest, checksums and POC launcher; the builder must reject reused/non-increasing live build numbers and existing release directories.
 
@@ -146,4 +149,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: the pre-POC Creator security gate is implemented, merged and locally confirmed on Windows with DPAPI. The official VK API POC has not started. The active milestone is the artifact/signing gate for a separate source-free test machine: the published Android debug key is being retired, live POC delivery is restricted to a signed non-debuggable APK, per-build identity is isolated to that APK, and a lightweight repository-wide workflow scans tracked signing material on every pull request. GitHub branch protection/ruleset enforcement of that check remains an explicit operator task. A local signing/update smoke may install locally verified `poc.1` and `poc.2` APKs on a device connected to the trusted build machine before the bundle milestone. No VK/network live test on the separate test machine may begin until the versioned Creator/Android bundle exists and its manifest and checksums have been verified. WLB2, pairing and session orchestration remain blocked pending the official VK API GO/NO-GO result.**
+**Current status: the pre-POC Creator security gate is implemented, merged and locally confirmed on Windows with DPAPI. The official VK API POC has not started. The active milestone is the artifact/signing gate for a separate source-free test machine: the published Android debug key is being retired, live POC delivery is restricted to a signed non-debuggable APK, verification tools are pinned, and a clean-tree PowerShell helper now preserves actual APK evidence with commit/tree provenance outside Gradle-owned output. The repository-wide signing-material workflow runs on every pull request, while GitHub branch protection/ruleset enforcement remains an explicit pre-merge operator task. A local signing/update smoke may install helper-produced `poc.1` and `poc.2` APKs on a device connected to the trusted build machine before the bundle milestone. No VK/network live test on the separate test machine may begin until the versioned Creator/Android bundle exists and its manifest and checksums have been verified. WLB2, pairing and session orchestration remain blocked pending the official VK API GO/NO-GO result.**
