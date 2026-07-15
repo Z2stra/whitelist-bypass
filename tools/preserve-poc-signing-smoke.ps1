@@ -55,9 +55,8 @@ function Invoke-NativeCommand {
     )
 
     # Windows PowerShell 5.1 converts redirected native stderr into ErrorRecord
-    # objects. A successful keytool/Gradle command can therefore terminate a
-    # script whose global ErrorActionPreference is Stop. Limit Continue to this
-    # native invocation and decide success exclusively from LASTEXITCODE.
+    # objects. Decide native success only from LASTEXITCODE and never echo
+    # arguments because they can name signing-related environment variables.
     $PreviousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
@@ -90,16 +89,17 @@ function Get-GitOutput {
         Invoke-NativeCommand `
             -Command $script:Git `
             -Arguments (@('-C', $RepoRoot) + $Arguments) `
-            -CaptureOutput
+            -CaptureOutput |
+            ForEach-Object { $_.ToString() }
     )
 }
 
 function Get-CurrentCommit {
-    return (Get-GitOutput @('rev-parse', 'HEAD') | Select-Object -First 1).ToString().Trim()
+    return (Get-GitOutput @('rev-parse', 'HEAD') | Select-Object -First 1).Trim()
 }
 
 function Get-CurrentTree {
-    return (Get-GitOutput @('rev-parse', 'HEAD^{tree}') | Select-Object -First 1).ToString().Trim()
+    return (Get-GitOutput @('rev-parse', 'HEAD^{tree}') | Select-Object -First 1).Trim()
 }
 
 function Get-SourceStatus {
@@ -144,8 +144,9 @@ function Read-PropertiesValue {
 
     $Pattern = '^\s*' + [regex]::Escape($Name) + '\s*=\s*(.*)\s*$'
     foreach ($Line in $Lines) {
-        if ($Line -match $Pattern) {
-            return $Matches[1].Trim()
+        $Match = [regex]::Match($Line, $Pattern)
+        if ($Match.Success) {
+            return $Match.Groups[1].Value.Trim()
         }
     }
 
@@ -184,11 +185,12 @@ function Get-SigningMetadata {
         throw 'POC signing environment is partial. Supply all four WLB_POC_* signing values or clear all four and use android-app\keystore.properties.'
     }
 
-    $PasswordEnvironmentName = $null
+    $StorePassword = $null
+    $StorePasswordEnvironmentName = $null
     if ($PresentEnvironmentNames.Count -eq $EnvironmentNames.Count) {
         $StorePath = $EnvironmentValues['WLB_POC_KEYSTORE_PATH']
         $Alias = $EnvironmentValues['WLB_POC_KEY_ALIAS']
-        $PasswordEnvironmentName = 'WLB_POC_KEYSTORE_PASSWORD'
+        $StorePasswordEnvironmentName = 'WLB_POC_KEYSTORE_PASSWORD'
     }
     else {
         $PropertiesPath = Join-Path $AndroidRoot 'keystore.properties'
@@ -218,6 +220,7 @@ function Get-SigningMetadata {
 
         $StorePath = Convert-PropertiesPath $PropertyValues['wlb.poc.storeFile']
         $Alias = $PropertyValues['wlb.poc.keyAlias']
+        $StorePassword = $PropertyValues['wlb.poc.storePassword']
     }
 
     $CandidatePath = if ([System.IO.Path]::IsPathRooted($StorePath)) {
@@ -235,7 +238,8 @@ function Get-SigningMetadata {
     return [pscustomobject]@{
         Path = $ResolvedPath
         Alias = $Alias
-        PasswordEnvironmentName = $PasswordEnvironmentName
+        StorePassword = $StorePassword
+        StorePasswordEnvironmentName = $StorePasswordEnvironmentName
     }
 }
 
@@ -280,9 +284,9 @@ function Get-PocIdentity {
 
     $Values = @{}
     foreach ($Line in $Output) {
-        $Text = $Line.ToString()
-        if ($Text -match '^WLB_POC_([^=]+)=(.*)$') {
-            $Values[$Matches[1]] = $Matches[2]
+        $Match = [regex]::Match($Line.ToString(), '^WLB_POC_([^=]+)=(.*)$')
+        if ($Match.Success) {
+            $Values[$Match.Groups[1].Value] = $Match.Groups[2].Value
         }
     }
 
@@ -331,11 +335,17 @@ function Get-ApkEvidence {
     $SignerDigests = @()
     foreach ($Line in $CertificateOutput) {
         $Text = $Line.ToString()
-        if ($Text -match '^Number of signers:\s*(\d+)\s*$') {
-            $SignerCount = [int]$Matches[1]
+        $CountMatch = [regex]::Match($Text, '^Number of signers:\s*(\d+)\s*$')
+        if ($CountMatch.Success) {
+            $SignerCount = [int]$CountMatch.Groups[1].Value
         }
-        if ($Text -match '^(?:Signer #\d+|.*Signer):?\s+certificate SHA-256 digest:\s*(\S+)\s*$') {
-            $SignerDigests += $Matches[1].Replace(':', '').ToLowerInvariant()
+
+        $DigestMatch = [regex]::Match(
+            $Text,
+            '^(?:Signer #\d+|.*Signer):?\s+certificate SHA-256 digest:\s*(\S+)\s*$'
+        )
+        if ($DigestMatch.Success) {
+            $SignerDigests += $DigestMatch.Groups[1].Value.Replace(':', '').ToLowerInvariant()
         }
     }
     $SignerDigests = @($SignerDigests | Sort-Object -Unique)
@@ -354,23 +364,37 @@ function Get-ApkEvidence {
             -CaptureOutput
     )
     $BadgingText = ($BadgingOutput | ForEach-Object { $_.ToString() }) -join "`n"
-    if ($BadgingText -match 'application-debuggable') {
+    if ($BadgingText.Contains('application-debuggable')) {
         throw ('POC APK must not be debuggable: {0}' -f $ApkPath)
     }
 
     $PackageLine = ($BadgingOutput | Select-Object -First 1).ToString()
-    if ($PackageLine -notmatch "^package: name='([^']+)'.*versionCode='([^']+)'.*versionName='([^']+)'") {
+    # .NET Regex is case-sensitive by default. This is intentional: PowerShell's
+    # -match is case-insensitive and could greedily capture platformBuildVersion*
+    # instead of the leading APK versionCode/versionName fields.
+    $PackageMatch = [regex]::Match(
+        $PackageLine,
+        "^package:\s+name='([^']+)'\s+versionCode='([^']+)'\s+versionName='([^']+)'(?:\s|$)"
+    )
+    if (-not $PackageMatch.Success) {
         throw ('Could not parse APK package identity: {0}' -f $ApkPath)
     }
 
-    $ApplicationId = $Matches[1]
-    $VersionCode = [int64]$Matches[2]
-    $VersionName = $Matches[3]
+    $ApplicationId = $PackageMatch.Groups[1].Value
+    $VersionCode = [int64]$PackageMatch.Groups[2].Value
+    $VersionName = $PackageMatch.Groups[3].Value
 
     if ($ApplicationId -ne $ExpectedIdentity.ApplicationId -or
         $VersionCode -ne $ExpectedIdentity.VersionCode -or
         $VersionName -ne $ExpectedIdentity.VersionName) {
-        throw ('APK identity does not match Gradle identity: {0}' -f $ApkPath)
+        throw ('APK identity mismatch for {0}. Actual={1}/{2}/{3}; Expected={4}/{5}/{6}' -f `
+            $ApkPath,
+            $ApplicationId,
+            $VersionCode,
+            $VersionName,
+            $ExpectedIdentity.ApplicationId,
+            $ExpectedIdentity.VersionCode,
+            $ExpectedIdentity.VersionName)
     }
 
     return [pscustomobject]@{
@@ -487,7 +511,6 @@ function Build-PocIntoStaging {
         -Path (Join-Path $StagedDirectory 'BUILD-MANIFEST.json')
 
     return [pscustomobject]@{
-        Identity = $Identity
         StagedDirectory = $StagedDirectory
         ApkName = $ApkName
     }
@@ -560,30 +583,38 @@ if (-not $SkipQualityChecks) {
 }
 
 New-Item -ItemType Directory -Path $ArtifactsRoot -Force | Out-Null
-$RunStagingRoot = Join-Path `
-    $ArtifactsRoot `
-    ('.run-' + [guid]::NewGuid().ToString('N'))
+$RunStagingRoot = Join-Path $ArtifactsRoot ('.run-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $RunStagingRoot | Out-Null
 
 $CertificatePath = Join-Path `
     $env:TEMP `
     ('wlb-poc-signing-' + [guid]::NewGuid().ToString('N') + '.der')
+$TemporaryPasswordEnvironmentName = $null
+$AcceptedDirectories = @()
 
 try {
+    $StorePasswordEnvironmentName = $Signing.StorePasswordEnvironmentName
+    if ([string]::IsNullOrWhiteSpace($StorePasswordEnvironmentName)) {
+        $TemporaryPasswordEnvironmentName = 'WLB_POC_KEYTOOL_STORE_PASSWORD_' + `
+            [guid]::NewGuid().ToString('N')
+        [Environment]::SetEnvironmentVariable(
+            $TemporaryPasswordEnvironmentName,
+            $Signing.StorePassword,
+            'Process'
+        )
+        $StorePasswordEnvironmentName = $TemporaryPasswordEnvironmentName
+    }
+
     $CertificateArguments = @(
         '-exportcert',
         '-storetype', 'PKCS12',
         '-keystore', $Signing.Path,
-        '-alias', $Signing.Alias
+        '-alias', $Signing.Alias,
+        '-storepass:env', $StorePasswordEnvironmentName,
+        '-file', $CertificatePath
     )
-    if (-not [string]::IsNullOrWhiteSpace($Signing.PasswordEnvironmentName)) {
-        $CertificateArguments += '-storepass:env'
-        $CertificateArguments += $Signing.PasswordEnvironmentName
-    }
-    $CertificateArguments += '-file'
-    $CertificateArguments += $CertificatePath
-
     Invoke-NativeCommand -Command $KeyTool -Arguments $CertificateArguments
+
     $ExpectedCertificateSha256 = (
         Get-FileHash -LiteralPath $CertificatePath -Algorithm SHA256
     ).Hash.ToLowerInvariant()
@@ -619,12 +650,18 @@ try {
         }
     }
 
-    Move-Item `
-        -LiteralPath $FirstStaged.StagedDirectory `
-        -Destination $FinalDirectories[0]
-    Move-Item `
-        -LiteralPath $SecondStaged.StagedDirectory `
-        -Destination $FinalDirectories[1]
+    try {
+        Move-Item -LiteralPath $FirstStaged.StagedDirectory -Destination $FinalDirectories[0]
+        $AcceptedDirectories += $FinalDirectories[0]
+        Move-Item -LiteralPath $SecondStaged.StagedDirectory -Destination $FinalDirectories[1]
+        $AcceptedDirectories += $FinalDirectories[1]
+    }
+    catch {
+        foreach ($Directory in $AcceptedDirectories) {
+            Remove-Item -LiteralPath $Directory -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
 
     Assert-SourceUnchanged `
         -ExpectedCommit $SourceCommit `
@@ -638,6 +675,13 @@ try {
     Write-Host ('Second: {0}' -f $FinalDirectories[1])
 }
 finally {
+    if (-not [string]::IsNullOrWhiteSpace($TemporaryPasswordEnvironmentName)) {
+        [Environment]::SetEnvironmentVariable(
+            $TemporaryPasswordEnvironmentName,
+            $null,
+            'Process'
+        )
+    }
     if (Test-Path -LiteralPath $CertificatePath) {
         Remove-Item -LiteralPath $CertificatePath -Force
     }
