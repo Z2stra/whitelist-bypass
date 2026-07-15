@@ -183,9 +183,15 @@ function Get-PocIdentity {
     $Previous = $env:WLB_POC_BUILD_NUMBER
     try {
         $env:WLB_POC_BUILD_NUMBER = [string]$BuildNumber
-        $Output = & $Gradle --no-daemon --quiet :app:printPocIdentity
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not obtain POC identity for build number $BuildNumber."
+        Push-Location $AndroidRoot
+        try {
+            $Output = & $Gradle --no-daemon --quiet :app:printPocIdentity
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not obtain POC identity for build number $BuildNumber."
+            }
+        }
+        finally {
+            Pop-Location
         }
     }
     finally {
@@ -297,7 +303,7 @@ function Write-Utf8NoBomJson {
     )
 
     $Json = $Value | ConvertTo-Json -Depth 5
-    $Utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
+    $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($Path, $Json + [Environment]::NewLine, $Utf8NoBom)
 }
 
