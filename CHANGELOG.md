@@ -14,6 +14,7 @@ All notable project changes made as part of the staged control-plane work are re
 - Added the official VK API PING/PONG POC checklist and results template.
 - Documented the source-free separate-machine live-test boundary and the Android POC signing/key lifecycle.
 - Distinguished the local signing/update smoke on the trusted build machine from later VK/network live tests on the separate source-free machine.
+- Replaced manual local POC manifest assembly with a checked PowerShell helper that records commit/tree provenance and derives manifest identity from the saved APK.
 
 ### Android
 
@@ -29,11 +30,14 @@ All notable project changes made as part of the staged control-plane work are re
 - Rejected partial signing environments only at the POC APK boundary, preventing source mixing without breaking ordinary non-POC tasks, including full Android lint.
 - Made signed POC APK and aggregate APK packaging fail closed when build identity or signing inputs are absent.
 - Added public-CI checks that verify environment and properties through two separately numbered signed APKs, compare each APK signer certificate with a disposable generated CI key, validate Gradle-derived identities, reject debuggable POC output and confirm POC AAB production remains disabled.
-- Added a regression check proving the ordinary release APK remains unsigned.
+- Pinned Android APK inspection and signature verification to build-tools `36.0.0` instead of selecting the newest preinstalled runner tool.
+- Strengthened the unsigned-release regression to require a structurally valid APK, the pinned expected unsigned diagnostic and no reported signer certificate.
 - Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths; required-check enforcement remains a GitHub ruleset/branch-protection operator task.
+- Added a repository-wide regression that verifies representative relay, cross-platform headless and VK-bot build outputs remain ignored even when a build script exits before cleanup.
 - Clarified that Gradle enforces only the build-number range; monotonically increasing live numbers and immutable release-directory names must be enforced by the future versioned bundle builder.
-- Added an operator procedure for certificate-fingerprint comparison and first-install/in-place-update proof using two successively numbered POC APKs stored under ignored `local-artifacts`, outside Gradle-owned build output.
-- Expanded project, Android and Creator ignore rules for local secrets, signing files, additional PKCS/key containers, build output, runtime profiles and versioned live bundles.
+- Added `tools/preserve-poc-signing-smoke.ps1`, which requires a clean source tree, pins commit/tree provenance, refuses reused output directories, verifies the copied APK signer/package/version/debuggable state and writes UTF-8 no-BOM manifests from actual APK evidence.
+- Added Android CI syntax parsing for the PowerShell signing-smoke helper.
+- Expanded project, Android and Creator ignore rules for local secrets, signing files, additional PKCS/key containers, all known build-script output families, runtime profiles and versioned live bundles.
 
 ### Creator VK transport security
 
