@@ -63,6 +63,8 @@ Traffic goes through the platform's SFU, which is on the government whitelist. T
 
 Prebuilt binaries are available on [GitHub Releases](../../releases).
 
+**Android signing warning:** historical Android APKs may be signed with the repository-owned debug key that was published in Git history. That identity is permanently untrusted and must not be used for the persistent-key POC chain. Transitioning to a verified POC APK requires a one-time uninstall before the first persistent-key installation.
+
 ### Creator side (free internet, desktop)
 
 Download and run the Electron app from [GitHub Releases](../../releases). It bundles the Go relay automatically.
@@ -79,7 +81,7 @@ Download and run the Electron app from [GitHub Releases](../../releases). It bun
 
 Three forms are available; pick whichever fits the device:
 
-- **Android** - install `whitelist-bypass.apk` from [Releases](../../releases). Allow the VPN prompt on first launch. Paste the join link and tap GO; system-wide traffic flows through the call.
+- **Android** - install `whitelist-bypass.apk` from [Releases](../../releases) only as a historical/non-POC artifact. It must not establish trusted POC update identity. Allow the VPN prompt on first launch. Paste the join link and tap GO; system-wide traffic flows through the call.
 - **iOS** - install `whitelist-bypass-proxy.ipa` from [Releases](../../releases) (sideload via AltStore / Sideloadly / your dev account). Exposes a local SOCKS5 proxy only - no system VPN. To proxy the whole device, point any SOCKS5-capable VPN app (Shadowrocket, Streisand, ...) at the SOCKS5 endpoint the app shows; or set the proxy per app (Telegram has built-in support).
 - **Linux desktop** - run a headless joiner; it exposes a SOCKS5 proxy on the given port for whatever you point at it. Useful for servers and Linux clients. Optional `--socks-user` / `--socks-pass` enable SOCKS5 username/password auth.
   - WB Stream: `headless-wbstream-joiner --room <link> --socks-port 1080 [--socks-user u --socks-pass p]`
@@ -95,8 +97,8 @@ The full step-by-step (Russian) covers each platform in detail: see [docs/SETUP.
 - gomobile (`go install golang.org/x/mobile/cmd/gomobile@latest`)
 - gobind (`go install golang.org/x/mobile/cmd/gobind@latest`)
 - Android SDK + NDK 29
-- Java 11+
-- Node.js 18+
+- JDK 17
+- Node.js 22 for Creator builds
 
 ### Android signing status
 
