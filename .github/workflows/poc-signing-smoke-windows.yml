@@ -93,36 +93,73 @@ jobs:
             $env:RUNNER_TEMP `
             'wlb-ci-poc.keystore'
           $LogPath = Join-Path $env:RUNNER_TEMP 'poc-signing-helper.log'
+          $KeytoolStdout = Join-Path $env:RUNNER_TEMP 'poc-keytool.stdout.log'
+          $KeytoolStderr = Join-Path $env:RUNNER_TEMP 'poc-keytool.stderr.log'
+          $HelperStdout = Join-Path $env:RUNNER_TEMP 'poc-helper.stdout.log'
+          $HelperStderr = Join-Path $env:RUNNER_TEMP 'poc-helper.stderr.log'
+          New-Item -ItemType File -Path $LogPath -Force | Out-Null
 
-          & keytool.exe -genkeypair `
-            -noprompt `
-            -storetype PKCS12 `
-            -keystore $env:WLB_POC_KEYSTORE_PATH `
-            -storepass:env WLB_POC_KEYSTORE_PASSWORD `
-            -keypass:env WLB_POC_KEY_PASSWORD `
-            -alias $env:WLB_POC_KEY_ALIAS `
-            -keyalg RSA `
-            -keysize 3072 `
-            -validity 2 `
-            -dname 'CN=CI POC, OU=Ephemeral, O=Whitelist Bypass, L=Test, ST=Test, C=US'
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Disposable Windows POC key generation failed'
+          $KeytoolArguments = @(
+            '-genkeypair',
+            '-noprompt',
+            '-storetype', 'PKCS12',
+            '-keystore', $env:WLB_POC_KEYSTORE_PATH,
+            '-storepass:env', 'WLB_POC_KEYSTORE_PASSWORD',
+            '-keypass:env', 'WLB_POC_KEY_PASSWORD',
+            '-alias', $env:WLB_POC_KEY_ALIAS,
+            '-keyalg', 'RSA',
+            '-keysize', '3072',
+            '-validity', '2',
+            '-dname', '"CN=CI POC, OU=Ephemeral, O=Whitelist Bypass, L=Test, ST=Test, C=US"'
+          )
+          $KeytoolProcess = Start-Process `
+            -FilePath keytool.exe `
+            -ArgumentList $KeytoolArguments `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $KeytoolStdout `
+            -RedirectStandardError $KeytoolStderr
+          $KeytoolOutput = @()
+          foreach ($Path in @($KeytoolStdout, $KeytoolStderr)) {
+            if (Test-Path -LiteralPath $Path) {
+              $KeytoolOutput += Get-Content -LiteralPath $Path
+            }
+          }
+          $KeytoolOutput | Add-Content -LiteralPath $LogPath -Encoding UTF8
+          $KeytoolOutput | ForEach-Object { Write-Host $_ }
+          if ($KeytoolProcess.ExitCode -ne 0) {
+            throw "Disposable Windows POC key generation failed with exit code $($KeytoolProcess.ExitCode)"
           }
 
-          $Output = @(& powershell.exe `
-            -NoProfile `
-            -ExecutionPolicy Bypass `
-            -File .\tools\preserve-poc-signing-smoke.ps1 `
-            -FirstBuildNumber 901 `
-            -SecondBuildNumber 902 `
-            -BuildToolsVersion $env:ANDROID_BUILD_TOOLS_VERSION `
-            -SkipQualityChecks 2>&1)
-          $ExitCode = $LASTEXITCODE
-          $Output | Set-Content -LiteralPath $LogPath -Encoding UTF8
+          $HelperArguments = @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', '.\tools\preserve-poc-signing-smoke.ps1',
+            '-FirstBuildNumber', '901',
+            '-SecondBuildNumber', '902',
+            '-BuildToolsVersion', $env:ANDROID_BUILD_TOOLS_VERSION,
+            '-SkipQualityChecks'
+          )
+          $HelperProcess = Start-Process `
+            -FilePath powershell.exe `
+            -ArgumentList $HelperArguments `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $HelperStdout `
+            -RedirectStandardError $HelperStderr
+          $Output = @()
+          foreach ($Path in @($HelperStdout, $HelperStderr)) {
+            if (Test-Path -LiteralPath $Path) {
+              $Output += Get-Content -LiteralPath $Path
+            }
+          }
+          $Output | Add-Content -LiteralPath $LogPath -Encoding UTF8
           $Output | ForEach-Object { Write-Host $_ }
 
-          if ($ExitCode -ne 0) {
-            throw "POC signing helper failed with exit code $ExitCode"
+          if ($HelperProcess.ExitCode -ne 0) {
+            throw "POC signing helper failed with exit code $($HelperProcess.ExitCode)"
           }
           if (-not ($Output -match '\[POC_SIGNING_SMOKE\] PASS')) {
             throw 'POC signing helper did not report PASS'
