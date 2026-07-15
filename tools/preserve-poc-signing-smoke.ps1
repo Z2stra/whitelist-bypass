@@ -23,8 +23,9 @@ $ScriptRoot = Split-Path -Parent $PSCommandPath
 $RepoRoot = (Resolve-Path (Join-Path $ScriptRoot '..')).Path
 $AndroidRoot = Join-Path $RepoRoot 'android-app'
 $Gradle = Join-Path $AndroidRoot 'gradlew.bat'
-$LocalArtifactsRoot = Join-Path $RepoRoot 'local-artifacts\poc-signing-smoke'
-$TemporaryApk = Join-Path $AndroidRoot 'app\build\outputs\apk\poc\app-poc.apk'
+$ArtifactsRoot = Join-Path $RepoRoot 'local-artifacts\poc-signing-smoke'
+$MutablePocOutput = Join-Path $AndroidRoot 'app\build\outputs\apk\poc'
+$MutablePocApk = Join-Path $MutablePocOutput 'app-poc.apk'
 
 function Get-RequiredCommandPath {
     param(
@@ -42,37 +43,67 @@ function Get-RequiredCommandPath {
     throw ('Required command was not found: {0}' -f ($Names -join ', '))
 }
 
-function Invoke-CheckedCommand {
+function Invoke-NativeCommand {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Command,
 
         [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
+        [string[]]$Arguments,
+
+        [switch]$CaptureOutput
     )
 
-    & $Command @Arguments 2>&1 | Out-Host
-    $ExitCode = $LASTEXITCODE
-    if ($ExitCode -ne 0) {
-        throw ('External command failed with exit code {0}: {1} {2}' -f `
-            $ExitCode,
-            $Command,
-            ($Arguments -join ' '))
+    # Windows PowerShell 5.1 converts redirected native stderr into ErrorRecord
+    # objects. A successful keytool/Gradle command can therefore terminate a
+    # script whose global ErrorActionPreference is Stop. Limit Continue to this
+    # native invocation and decide success exclusively from LASTEXITCODE.
+    $PreviousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $Output = @(& $Command @Arguments 2>&1)
+        $ExitCode = $LASTEXITCODE
     }
+    finally {
+        $ErrorActionPreference = $PreviousPreference
+    }
+
+    if ($ExitCode -ne 0) {
+        $Output | ForEach-Object { Write-Host $_ }
+        throw ('External command failed with exit code {0}: {1}' -f $ExitCode, $Command)
+    }
+
+    if ($CaptureOutput) {
+        return $Output
+    }
+
+    $Output | ForEach-Object { Write-Host $_ }
 }
 
-function Get-GitLines {
+function Get-GitOutput {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments
     )
 
-    $Output = & $script:Git -C $RepoRoot @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw ('git failed: git -C {0} {1}' -f $RepoRoot, ($Arguments -join ' '))
-    }
+    return @(
+        Invoke-NativeCommand `
+            -Command $script:Git `
+            -Arguments (@('-C', $RepoRoot) + $Arguments) `
+            -CaptureOutput
+    )
+}
 
-    return @($Output)
+function Get-CurrentCommit {
+    return (Get-GitOutput @('rev-parse', 'HEAD') | Select-Object -First 1).ToString().Trim()
+}
+
+function Get-CurrentTree {
+    return (Get-GitOutput @('rev-parse', 'HEAD^{tree}') | Select-Object -First 1).ToString().Trim()
+}
+
+function Get-SourceStatus {
+    return @(Get-GitOutput @('status', '--porcelain=v1', '--untracked-files=all'))
 }
 
 function Assert-SourceUnchanged {
@@ -87,16 +118,14 @@ function Assert-SourceUnchanged {
         [string]$Stage
     )
 
-    $CurrentCommit = (Get-GitLines @('rev-parse', 'HEAD') | Select-Object -First 1).Trim()
-    $CurrentTree = (Get-GitLines @('rev-parse', 'HEAD^{tree}') | Select-Object -First 1).Trim()
-    $Status = @(Get-GitLines @('status', '--porcelain=v1', '--untracked-files=all'))
-
-    if ($CurrentCommit -ne $ExpectedCommit) {
+    if ((Get-CurrentCommit) -ne $ExpectedCommit) {
         throw ("HEAD changed during POC artifact production at stage '{0}'." -f $Stage)
     }
-    if ($CurrentTree -ne $ExpectedTree) {
+    if ((Get-CurrentTree) -ne $ExpectedTree) {
         throw ("Git tree changed during POC artifact production at stage '{0}'." -f $Stage)
     }
+
+    $Status = @(Get-SourceStatus)
     if ($Status.Count -ne 0) {
         throw ("Source tree is not clean at stage '{0}':`n{1}" -f `
             $Stage,
@@ -213,12 +242,17 @@ function Get-SigningMetadata {
 function Invoke-AndroidGradle {
     param(
         [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
+        [string[]]$Arguments,
+
+        [switch]$CaptureOutput
     )
 
     Push-Location $AndroidRoot
     try {
-        Invoke-CheckedCommand -Command $Gradle -Arguments $Arguments
+        return Invoke-NativeCommand `
+            -Command $Gradle `
+            -Arguments $Arguments `
+            -CaptureOutput:$CaptureOutput
     }
     finally {
         Pop-Location
@@ -234,16 +268,11 @@ function Get-PocIdentity {
     $PreviousBuildNumber = $env:WLB_POC_BUILD_NUMBER
     try {
         $env:WLB_POC_BUILD_NUMBER = [string]$BuildNumber
-        Push-Location $AndroidRoot
-        try {
-            $Output = & $Gradle --no-daemon --quiet :app:printPocIdentity
-            if ($LASTEXITCODE -ne 0) {
-                throw ('Could not obtain POC identity for build number {0}.' -f $BuildNumber)
-            }
-        }
-        finally {
-            Pop-Location
-        }
+        $Output = @(
+            Invoke-AndroidGradle `
+                -Arguments @('--no-daemon', '--quiet', ':app:printPocIdentity') `
+                -CaptureOutput
+        )
     }
     finally {
         $env:WLB_POC_BUILD_NUMBER = $PreviousBuildNumber
@@ -251,7 +280,8 @@ function Get-PocIdentity {
 
     $Values = @{}
     foreach ($Line in $Output) {
-        if ($Line -match '^WLB_POC_([^=]+)=(.*)$') {
+        $Text = $Line.ToString()
+        if ($Text -match '^WLB_POC_([^=]+)=(.*)$') {
             $Values[$Matches[1]] = $Matches[2]
         }
     }
@@ -290,18 +320,21 @@ function Get-ApkEvidence {
         [string]$ApkSigner
     )
 
-    $CertificateOutput = @(& $ApkSigner verify --verbose --print-certs $ApkPath 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        throw ('APK signature verification failed: {0}' -f $ApkPath)
-    }
+    $CertificateOutput = @(
+        Invoke-NativeCommand `
+            -Command $ApkSigner `
+            -Arguments @('verify', '--verbose', '--print-certs', $ApkPath) `
+            -CaptureOutput
+    )
 
     $SignerCount = $null
     $SignerDigests = @()
     foreach ($Line in $CertificateOutput) {
-        if ($Line -match '^Number of signers:\s*(\d+)\s*$') {
+        $Text = $Line.ToString()
+        if ($Text -match '^Number of signers:\s*(\d+)\s*$') {
             $SignerCount = [int]$Matches[1]
         }
-        if ($Line -match '^(?:Signer #\d+|.*Signer):?\s+certificate SHA-256 digest:\s*(\S+)\s*$') {
+        if ($Text -match '^(?:Signer #\d+|.*Signer):?\s+certificate SHA-256 digest:\s*(\S+)\s*$') {
             $SignerDigests += $Matches[1].Replace(':', '').ToLowerInvariant()
         }
     }
@@ -314,15 +347,18 @@ function Get-ApkEvidence {
         throw ('APK signer certificate does not match the configured POC keystore: {0}' -f $ApkPath)
     }
 
-    $BadgingOutput = @(& $Aapt dump badging $ApkPath 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        throw ('APK identity inspection failed: {0}' -f $ApkPath)
-    }
-    if (($BadgingOutput -join "`n") -match 'application-debuggable') {
+    $BadgingOutput = @(
+        Invoke-NativeCommand `
+            -Command $Aapt `
+            -Arguments @('dump', 'badging', $ApkPath) `
+            -CaptureOutput
+    )
+    $BadgingText = ($BadgingOutput | ForEach-Object { $_.ToString() }) -join "`n"
+    if ($BadgingText -match 'application-debuggable') {
         throw ('POC APK must not be debuggable: {0}' -f $ApkPath)
     }
 
-    $PackageLine = $BadgingOutput | Select-Object -First 1
+    $PackageLine = ($BadgingOutput | Select-Object -First 1).ToString()
     if ($PackageLine -notmatch "^package: name='([^']+)'.*versionCode='([^']+)'.*versionName='([^']+)'") {
         throw ('Could not parse APK package identity: {0}' -f $ApkPath)
     }
@@ -365,13 +401,16 @@ function Write-Utf8NoBomJson {
     )
 }
 
-function Build-And-PreservePocApk {
+function Build-PocIntoStaging {
     param(
         [Parameter(Mandatory = $true)]
         [int]$BuildNumber,
 
         [Parameter(Mandatory = $true)]
         [pscustomobject]$Identity,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RunStagingRoot,
 
         [Parameter(Mandatory = $true)]
         [string]$SourceCommit,
@@ -389,20 +428,15 @@ function Build-And-PreservePocApk {
         [string]$ApkSigner
     )
 
-    $FinalDirectory = Join-Path $LocalArtifactsRoot $Identity.VersionName
-    if (Test-Path -LiteralPath $FinalDirectory) {
-        throw ('Refusing to reuse existing smoke artifact directory: {0}' -f $FinalDirectory)
-    }
-
     $PreviousBuildNumber = $env:WLB_POC_BUILD_NUMBER
     try {
         $env:WLB_POC_BUILD_NUMBER = [string]$BuildNumber
         Remove-Item `
-            -LiteralPath (Join-Path $AndroidRoot 'app\build\outputs\apk\poc') `
+            -LiteralPath $MutablePocOutput `
             -Recurse `
             -Force `
             -ErrorAction SilentlyContinue
-        Invoke-AndroidGradle @('--no-daemon', ':app:assemblePoc')
+        Invoke-AndroidGradle -Arguments @('--no-daemon', ':app:assemblePoc')
     }
     finally {
         $env:WLB_POC_BUILD_NUMBER = $PreviousBuildNumber
@@ -413,65 +447,49 @@ function Build-And-PreservePocApk {
         -ExpectedTree $SourceTree `
         -Stage ('after build {0}' -f $BuildNumber)
 
-    if (-not (Test-Path -LiteralPath $TemporaryApk -PathType Leaf)) {
-        throw ('Gradle did not produce the expected POC APK: {0}' -f $TemporaryApk)
+    if (-not (Test-Path -LiteralPath $MutablePocApk -PathType Leaf)) {
+        throw ('Gradle did not produce the expected POC APK: {0}' -f $MutablePocApk)
     }
 
-    New-Item -ItemType Directory -Path $LocalArtifactsRoot -Force | Out-Null
-    $StagingDirectory = Join-Path `
-        $LocalArtifactsRoot `
-        ('.staging-' + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $StagingDirectory | Out-Null
+    $StagedDirectory = Join-Path $RunStagingRoot $Identity.VersionName
+    New-Item -ItemType Directory -Path $StagedDirectory | Out-Null
+    $ApkName = 'whitelist-bypass-{0}.apk' -f $Identity.VersionName
+    $StagedApk = Join-Path $StagedDirectory $ApkName
+    Copy-Item -LiteralPath $MutablePocApk -Destination $StagedApk
 
-    try {
-        $ApkName = 'whitelist-bypass-{0}.apk' -f $Identity.VersionName
-        $StagedApk = Join-Path $StagingDirectory $ApkName
-        Copy-Item -LiteralPath $TemporaryApk -Destination $StagedApk
+    $Evidence = Get-ApkEvidence `
+        -ApkPath $StagedApk `
+        -ExpectedCertificateSha256 $ExpectedCertificateSha256 `
+        -ExpectedIdentity $Identity `
+        -Aapt $Aapt `
+        -ApkSigner $ApkSigner
 
-        $Evidence = Get-ApkEvidence `
-            -ApkPath $StagedApk `
-            -ExpectedCertificateSha256 $ExpectedCertificateSha256 `
-            -ExpectedIdentity $Identity `
-            -Aapt $Aapt `
-            -ApkSigner $ApkSigner
+    Assert-SourceUnchanged `
+        -ExpectedCommit $SourceCommit `
+        -ExpectedTree $SourceTree `
+        -Stage ('before manifest {0}' -f $BuildNumber)
 
-        Assert-SourceUnchanged `
-            -ExpectedCommit $SourceCommit `
-            -ExpectedTree $SourceTree `
-            -Stage ('before manifest {0}' -f $BuildNumber)
-
-        $Manifest = [ordered]@{
-            schemaVersion = 1
-            applicationId = $Evidence.ApplicationId
-            version = $Evidence.VersionName
-            versionCode = $Evidence.VersionCode
-            gitCommit = $SourceCommit
-            gitTree = $SourceTree
-            apk = $ApkName
-            apkSha256 = $Evidence.ApkSha256
-            certificateSha256 = $Evidence.CertificateSha256
-            debuggable = $Evidence.Debuggable
-            builtAtUtc = [DateTime]::UtcNow.ToString('o')
-        }
-        Write-Utf8NoBomJson `
-            -Value $Manifest `
-            -Path (Join-Path $StagingDirectory 'BUILD-MANIFEST.json')
-
-        if (Test-Path -LiteralPath $FinalDirectory) {
-            throw ('Refusing to overwrite smoke artifact directory created concurrently: {0}' -f $FinalDirectory)
-        }
-        Move-Item -LiteralPath $StagingDirectory -Destination $FinalDirectory
-
-        return [pscustomobject]@{
-            Directory = $FinalDirectory
-            Apk = Join-Path $FinalDirectory $ApkName
-            Manifest = Join-Path $FinalDirectory 'BUILD-MANIFEST.json'
-        }
+    $Manifest = [ordered]@{
+        schemaVersion = 1
+        applicationId = $Evidence.ApplicationId
+        version = $Evidence.VersionName
+        versionCode = $Evidence.VersionCode
+        gitCommit = $SourceCommit
+        gitTree = $SourceTree
+        apk = $ApkName
+        apkSha256 = $Evidence.ApkSha256
+        certificateSha256 = $Evidence.CertificateSha256
+        debuggable = $Evidence.Debuggable
+        builtAtUtc = [DateTime]::UtcNow.ToString('o')
     }
-    finally {
-        if (Test-Path -LiteralPath $StagingDirectory) {
-            Remove-Item -LiteralPath $StagingDirectory -Recurse -Force
-        }
+    Write-Utf8NoBomJson `
+        -Value $Manifest `
+        -Path (Join-Path $StagedDirectory 'BUILD-MANIFEST.json')
+
+    return [pscustomobject]@{
+        Identity = $Identity
+        StagedDirectory = $StagedDirectory
+        ApkName = $ApkName
     }
 }
 
@@ -500,23 +518,26 @@ if (-not (Test-Path -LiteralPath $Aapt -PathType Leaf) -or
         $BuildToolsRoot)
 }
 
-$InitialStatus = @(Get-GitLines @('status', '--porcelain=v1', '--untracked-files=all'))
+$InitialStatus = @(Get-SourceStatus)
 if ($InitialStatus.Count -ne 0) {
     throw ("Tracked/untracked source tree must be clean before POC artifact production:`n{0}" -f `
         ($InitialStatus -join [Environment]::NewLine))
 }
 
-$SourceCommit = (Get-GitLines @('rev-parse', 'HEAD') | Select-Object -First 1).Trim()
-$SourceTree = (Get-GitLines @('rev-parse', 'HEAD^{tree}') | Select-Object -First 1).Trim()
-
+$SourceCommit = Get-CurrentCommit
+$SourceTree = Get-CurrentTree
 $FirstIdentity = Get-PocIdentity -BuildNumber $FirstBuildNumber
 $SecondIdentity = Get-PocIdentity -BuildNumber $SecondBuildNumber
+
 if ($SecondIdentity.VersionCode -le $FirstIdentity.VersionCode) {
     throw 'Second POC versionCode must be greater than the first POC versionCode.'
 }
 
-foreach ($Identity in @($FirstIdentity, $SecondIdentity)) {
-    $Directory = Join-Path $LocalArtifactsRoot $Identity.VersionName
+$FinalDirectories = @(
+    Join-Path $ArtifactsRoot $FirstIdentity.VersionName
+    Join-Path $ArtifactsRoot $SecondIdentity.VersionName
+)
+foreach ($Directory in $FinalDirectories) {
     if (Test-Path -LiteralPath $Directory) {
         throw ('Refusing to reuse existing smoke artifact directory: {0}' -f $Directory)
     }
@@ -528,15 +549,21 @@ Assert-SourceUnchanged `
     -Stage 'before quality checks'
 
 if (-not $SkipQualityChecks) {
-    Invoke-AndroidGradle @('--no-daemon', 'test')
-    Invoke-AndroidGradle @('--no-daemon', 'lint')
-    Invoke-AndroidGradle @('--no-daemon', 'assembleDebug')
+    Invoke-AndroidGradle -Arguments @('--no-daemon', 'test')
+    Invoke-AndroidGradle -Arguments @('--no-daemon', 'lint')
+    Invoke-AndroidGradle -Arguments @('--no-daemon', 'assembleDebug')
 
     Assert-SourceUnchanged `
         -ExpectedCommit $SourceCommit `
         -ExpectedTree $SourceTree `
         -Stage 'after quality checks'
 }
+
+New-Item -ItemType Directory -Path $ArtifactsRoot -Force | Out-Null
+$RunStagingRoot = Join-Path `
+    $ArtifactsRoot `
+    ('.run-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $RunStagingRoot | Out-Null
 
 $CertificatePath = Join-Path `
     $env:TEMP `
@@ -556,24 +583,25 @@ try {
     $CertificateArguments += '-file'
     $CertificateArguments += $CertificatePath
 
-    Invoke-CheckedCommand -Command $KeyTool -Arguments $CertificateArguments
-
+    Invoke-NativeCommand -Command $KeyTool -Arguments $CertificateArguments
     $ExpectedCertificateSha256 = (
         Get-FileHash -LiteralPath $CertificatePath -Algorithm SHA256
     ).Hash.ToLowerInvariant()
 
-    $FirstArtifact = Build-And-PreservePocApk `
+    $FirstStaged = Build-PocIntoStaging `
         -BuildNumber $FirstBuildNumber `
         -Identity $FirstIdentity `
+        -RunStagingRoot $RunStagingRoot `
         -SourceCommit $SourceCommit `
         -SourceTree $SourceTree `
         -ExpectedCertificateSha256 $ExpectedCertificateSha256 `
         -Aapt $Aapt `
         -ApkSigner $ApkSigner
 
-    $SecondArtifact = Build-And-PreservePocApk `
+    $SecondStaged = Build-PocIntoStaging `
         -BuildNumber $SecondBuildNumber `
         -Identity $SecondIdentity `
+        -RunStagingRoot $RunStagingRoot `
         -SourceCommit $SourceCommit `
         -SourceTree $SourceTree `
         -ExpectedCertificateSha256 $ExpectedCertificateSha256 `
@@ -583,16 +611,37 @@ try {
     Assert-SourceUnchanged `
         -ExpectedCommit $SourceCommit `
         -ExpectedTree $SourceTree `
+        -Stage 'before accepting artifact pair'
+
+    foreach ($Directory in $FinalDirectories) {
+        if (Test-Path -LiteralPath $Directory) {
+            throw ('Refusing to overwrite smoke artifact directory created concurrently: {0}' -f $Directory)
+        }
+    }
+
+    Move-Item `
+        -LiteralPath $FirstStaged.StagedDirectory `
+        -Destination $FinalDirectories[0]
+    Move-Item `
+        -LiteralPath $SecondStaged.StagedDirectory `
+        -Destination $FinalDirectories[1]
+
+    Assert-SourceUnchanged `
+        -ExpectedCommit $SourceCommit `
+        -ExpectedTree $SourceTree `
         -Stage 'after artifact preservation'
 
     Write-Host '[POC_SIGNING_SMOKE] PASS'
     Write-Host ('Commit: {0}' -f $SourceCommit)
     Write-Host ('Tree:   {0}' -f $SourceTree)
-    Write-Host ('First:  {0}' -f $FirstArtifact.Directory)
-    Write-Host ('Second: {0}' -f $SecondArtifact.Directory)
+    Write-Host ('First:  {0}' -f $FinalDirectories[0])
+    Write-Host ('Second: {0}' -f $FinalDirectories[1])
 }
 finally {
     if (Test-Path -LiteralPath $CertificatePath) {
         Remove-Item -LiteralPath $CertificatePath -Force
+    }
+    if (Test-Path -LiteralPath $RunStagingRoot) {
+        Remove-Item -LiteralPath $RunStagingRoot -Recurse -Force
     }
 }
