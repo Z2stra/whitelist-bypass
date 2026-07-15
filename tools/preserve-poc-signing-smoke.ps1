@@ -94,7 +94,8 @@ function Assert-SourceUnchanged {
         throw "Git tree changed during POC artifact production at stage '$Stage'."
     }
     if ($Status.Count -gt 0) {
-        throw "Source tree is not clean at stage '$Stage':`n$($Status -join "`n")"
+        $StatusText = $Status -join [Environment]::NewLine
+        throw "Source tree is not clean at stage '$Stage':`n$StatusText"
     }
 }
 
@@ -434,7 +435,8 @@ if (-not (Test-Path -LiteralPath $Aapt -PathType Leaf) -or
 
 $InitialStatus = @(Get-GitOutput @('status', '--porcelain=v1', '--untracked-files=all'))
 if ($InitialStatus.Count -gt 0) {
-    throw "Tracked/untracked source tree must be clean before POC artifact production:`n$($InitialStatus -join "`n")"
+    $InitialStatusText = $InitialStatus -join [Environment]::NewLine
+    throw "Tracked/untracked source tree must be clean before POC artifact production:`n$InitialStatusText"
 }
 $SourceCommit = (Get-GitOutput @('rev-parse', 'HEAD') | Select-Object -First 1).Trim()
 $SourceTree = (Get-GitOutput @('rev-parse', 'HEAD^{tree}') | Select-Object -First 1).Trim()
