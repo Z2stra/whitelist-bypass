@@ -6,6 +6,7 @@ on:
       - ".gitignore"
       - "android-app/**"
       - ".github/workflows/android-quality.yml"
+      - "tools/preserve-poc-signing-smoke.ps1"
   push:
     branches:
       - "agent/**"
@@ -13,6 +14,7 @@ on:
       - ".gitignore"
       - "android-app/**"
       - ".github/workflows/android-quality.yml"
+      - "tools/preserve-poc-signing-smoke.ps1"
   workflow_dispatch:
 
 permissions:
@@ -32,6 +34,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Parse POC signing smoke helper
+        shell: pwsh
+        run: |
+          $Tokens = $null
+          $Errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/preserve-poc-signing-smoke.ps1'),
+            [ref]$Tokens,
+            [ref]$Errors
+          ) | Out-Null
+          if ($Errors.Count -gt 0) {
+            $Errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
