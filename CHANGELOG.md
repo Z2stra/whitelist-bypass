@@ -13,24 +13,26 @@ All notable project changes made as part of the staged control-plane work are re
 - Added a WLB2 envelope draft with an external random `keyId` to avoid circular per-device key selection.
 - Added the official VK API PING/PONG POC checklist and results template.
 - Documented the source-free separate-machine live-test boundary and the Android POC signing/key lifecycle.
+- Distinguished the local signing/update smoke on the trusted build machine from later VK/network live tests on the separate source-free machine.
 
 ### Android
 
 - Scoped the Quick Settings `VpnTileService` declaration to API 24 without raising the application `minSdk` from 23.
 - Updated active foreground-service notifications through `startForeground`, closing Android 13 notification-permission lint errors without introducing a user-facing notification permission request.
-- Added a reproducible Android CI gate for unit tests, `lintDebug`, debug APK assembly and report/artifact retention.
+- Added a reproducible Android CI gate for unit tests, full `lint`, debug APK assembly and report/artifact retention.
 - Removed the repository-owned `debug.keystore` from active use and stopped signing release output with a publicly available debug key.
 - Restored standard machine-local Android debug signing and left production release signing intentionally unconfigured.
-- Added a separate non-debuggable `poc` build type that requires an external PKCS12 keystore plus a strictly increasing bounded `WLB_POC_BUILD_NUMBER`.
+- Added a separate non-debuggable `poc` build type that requires an external PKCS12 keystore plus a bounded `WLB_POC_BUILD_NUMBER` in `1..999`.
 - Applied the numbered live version code only to signed POC APK output so normal debug/release artifacts retain the stable base identity.
 - Restricted live POC delivery to APK and made POC Android App Bundle production fail with an explicit unsupported-operation error.
 - Added local environment/property inputs for POC signing without committing key paths, aliases or passwords.
-- Rejected partial signing environments only at the POC APK boundary, preventing source mixing without breaking ordinary non-POC tasks.
+- Rejected partial signing environments only at the POC APK boundary, preventing source mixing without breaking ordinary non-POC tasks, including full Android lint.
 - Made signed POC APK and aggregate APK packaging fail closed when build identity or signing inputs are absent.
-- Added public-CI checks that verify environment and properties through two separately numbered signed APKs, compare each APK signer certificate with the generated CI key, validate Gradle-derived identities, reject debuggable POC output and confirm POC AAB production remains disabled.
+- Added public-CI checks that verify environment and properties through two separately numbered signed APKs, compare each APK signer certificate with a disposable generated CI key, validate Gradle-derived identities, reject debuggable POC output and confirm POC AAB production remains disabled.
 - Added a regression check proving the ordinary release APK remains unsigned.
 - Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths; required-check enforcement remains a GitHub ruleset/branch-protection operator task.
-- Added an operator procedure for certificate-fingerprint comparison and first-install/in-place-update proof using two successively numbered POC APKs.
+- Clarified that Gradle enforces only the build-number range; monotonically increasing live numbers and immutable release-directory names must be enforced by the future versioned bundle builder.
+- Added an operator procedure for certificate-fingerprint comparison and first-install/in-place-update proof using two successively numbered POC APKs stored under ignored `local-artifacts`, outside Gradle-owned build output.
 - Expanded project, Android and Creator ignore rules for local secrets, signing files, additional PKCS/key containers, build output, runtime profiles and versioned live bundles.
 
 ### Creator VK transport security
@@ -92,11 +94,12 @@ All notable project changes made as part of the staged control-plane work are re
 
 - VK transport hardening, typed headless process events, the isolated `WLB-POC/1` handler and the Electron IPC/remote-content trust boundary are implemented and tested.
 - Stored VK/proxy secrets are main-process owned and OS-protected; the merged build passed the local first-run Windows DPAPI and protected-storage smoke.
-- Live POC delivery is gated on an external persistent Android POC key and a versioned prebuilt APK-only bundle for the separate test machine.
+- Live VK/network POC delivery is gated on an external persistent Android POC key and a versioned prebuilt APK-only bundle for the separate test machine.
+- Public CI may create a disposable runner-local synthetic signing key, but persistent/live signing keys remain prohibited from Git and public CI configuration or artifacts.
 
 ### Known baseline debt
 
-- Android has no blocking lint errors; 69 non-blocking warnings remain classified as technical debt.
+- Android has no blocking lint errors; previously classified non-blocking warnings remain tracked as technical debt.
 - Platform sessions remain in the persistent Chromium profile, and proxy credentials are still visible transiently in child-process command-line arguments to legacy Go binaries.
 - Creator dependency audit findings remain a separate dependency-upgrade task; no automatic `npm audit fix` was applied.
 - The historical repository debug key remains publicly recoverable and must never be trusted again, even after deletion from the current tree.
