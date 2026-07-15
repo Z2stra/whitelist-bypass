@@ -15,6 +15,7 @@ All notable project changes made as part of the staged control-plane work are re
 - Documented the source-free separate-machine live-test boundary and the Android POC signing/key lifecycle.
 - Distinguished the local signing/update smoke on the trusted build machine from later VK/network live tests on the separate source-free machine.
 - Replaced manual local POC manifest assembly with a checked PowerShell helper that records commit/tree provenance and derives manifest identity from the saved APK.
+- Clarified that the canonical helper requires the complete signing environment, while ignored `keystore.properties` remains a direct-Gradle fallback only.
 - Corrected the source-build README so it no longer describes the intentionally disabled unsigned Android release path as a usable release artifact.
 
 ### Android
@@ -27,7 +28,7 @@ All notable project changes made as part of the staged control-plane work are re
 - Added a separate non-debuggable `poc` build type that requires an external PKCS12 keystore plus a bounded `WLB_POC_BUILD_NUMBER` in `1..999`.
 - Applied the numbered live version code only to signed POC APK output so normal debug/release artifacts retain the stable base identity.
 - Restricted live POC delivery to APK and made POC Android App Bundle production fail with an explicit unsupported-operation error.
-- Added local environment/property inputs for POC signing without committing key paths, aliases or passwords.
+- Added local environment/property inputs for direct Gradle POC signing without committing key paths, aliases or passwords.
 - Rejected partial signing environments only at the POC APK boundary, preventing source mixing without breaking ordinary non-POC tasks, including full Android lint.
 - Made signed POC APK and aggregate APK packaging fail closed when build identity or signing inputs are absent.
 - Added public-CI checks that verify environment and properties through two separately numbered signed APKs, compare each APK signer certificate with a disposable generated CI key, validate Gradle-derived identities, reject debuggable POC output and confirm POC AAB production remains disabled.
@@ -38,9 +39,11 @@ All notable project changes made as part of the staged control-plane work are re
 - Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths, and configured its `tracked-signing-material` job as a required `main` status check.
 - Added a repository-wide regression that verifies representative relay, cross-platform headless and VK-bot build outputs remain ignored even when a build script exits before cleanup.
 - Clarified that Gradle enforces only the build-number range; monotonically increasing live numbers and immutable release-directory names must be enforced by the future versioned bundle builder.
-- Added `tools/preserve-poc-signing-smoke.ps1`, which requires a clean source tree, pins commit/tree provenance, refuses reused output directories, verifies the copied APK signer/package/version/debuggable state and writes UTF-8 no-BOM manifests from actual APK evidence.
-- Added Android CI syntax parsing and a real Windows end-to-end workflow for the PowerShell signing-smoke helper.
-- Made APK package/version parsing case-sensitive so Windows PowerShell cannot mistake `platformBuildVersionCode/Name` for the leading APK `versionCode/versionName` fields.
+- Made `tools/preserve-poc-signing-smoke.ps1` environment-only, eliminating a second parser for Java `.properties` escaping rules.
+- Made local artifact-pair acceptance transactional: any failure before PASS removes every already moved final version directory.
+- Added an acceptance rollback self-test that injects failures after the first move, after the second move and during final validation.
+- Added a Windows CI path that runs the canonical helper without `-SkipQualityChecks` and independently rechecks preserved APK signer, package/version, non-debuggable state, hashes, manifest schema, UTF-8 no-BOM and commit/tree provenance.
+- Added Android CI syntax parsing for the PowerShell signing-smoke helper.
 - Expanded project, Android and Creator ignore rules for local secrets, signing files, additional PKCS/key containers, all known build-script output families, runtime profiles and versioned live bundles.
 
 ### Creator VK transport security
