@@ -25,7 +25,7 @@ concurrency:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -120,8 +120,8 @@ jobs:
             WLB_POC_KEYSTORE_PATH="$RUNNER_TEMP/partial-poc.keystore"
           )
 
-          # A stale partial POC environment must not break normal development tasks.
-          "${partial_env[@]}" ./gradlew --no-daemon test lintDebug assembleDebug
+          # A stale partial POC environment must not break the complete Android DoD.
+          "${partial_env[@]}" ./gradlew --no-daemon test lint assembleDebug
 
           aapt="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt | sort -V | tail -n 1)"
           if [[ -z "$aapt" ]]; then
@@ -195,7 +195,7 @@ jobs:
         id: lint
         continue-on-error: true
         working-directory: android-app
-        run: ./gradlew --no-daemon lintDebug
+        run: ./gradlew --no-daemon lint
 
       - name: Assemble debug APK
         working-directory: android-app
