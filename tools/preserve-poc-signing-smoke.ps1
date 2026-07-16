@@ -6,21 +6,30 @@ param(
     [ValidateRange(2, 999)]
     [int]$SecondBuildNumber = 2,
 
-    [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$BuildToolsVersion = '36.0.0',
+    [ValidatePattern('^[0-9A-Fa-f]{64}$')]
+    [string]$ExpectedCertificateSha256,
 
     [switch]$SkipQualityChecks,
 
+    # Public CI may verify the mechanism with a disposable certificate even
+    # after the real public identity is committed. This switch is rejected
+    # outside GitHub Actions.
+    [switch]$AllowSyntheticCiCertificate,
+
     # CI-only regression path. It never builds or signs an APK.
-    [switch]$RunAcceptanceRollbackSelfTest
+    [switch]$RunSafetySelfTests
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ($SecondBuildNumber -le $FirstBuildNumber) {
-    throw 'SecondBuildNumber must be greater than FirstBuildNumber.'
-}
+$PinnedBuildToolsVersion = '36.0.0'
+$SigningEnvironmentNames = @(
+    'WLB_POC_KEYSTORE_PATH',
+    'WLB_POC_KEYSTORE_PASSWORD',
+    'WLB_POC_KEY_ALIAS',
+    'WLB_POC_KEY_PASSWORD'
+)
 
 $ScriptRoot = Split-Path -Parent $PSCommandPath
 $RepoRoot = (Resolve-Path (Join-Path $ScriptRoot '..')).Path
@@ -29,6 +38,8 @@ $Gradle = Join-Path $AndroidRoot 'gradlew.bat'
 $ArtifactsRoot = Join-Path $RepoRoot 'local-artifacts\poc-signing-smoke'
 $MutablePocOutput = Join-Path $AndroidRoot 'app\build\outputs\apk\poc'
 $MutablePocApk = Join-Path $MutablePocOutput 'app-poc.apk'
+$RunLockPath = Join-Path $ArtifactsRoot '.locks\poc-signing-smoke.lock'
+$PublicIdentityPath = Join-Path $AndroidRoot 'poc-signing-identity.json'
 
 function Get-RequiredCommandPath {
     param(
@@ -59,7 +70,7 @@ function Invoke-NativeCommand {
 
     # Windows PowerShell 5.1 converts redirected native stderr into ErrorRecord
     # objects. Decide native success only from LASTEXITCODE and never echo
-    # arguments because they can name signing-related environment variables.
+    # arguments because they may identify signing-related environment variables.
     $PreviousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
@@ -135,29 +146,73 @@ function Assert-SourceUnchanged {
     }
 }
 
-function Get-SigningEnvironment {
-    $EnvironmentNames = @(
-        'WLB_POC_KEYSTORE_PATH',
-        'WLB_POC_KEYSTORE_PASSWORD',
-        'WLB_POC_KEY_ALIAS',
-        'WLB_POC_KEY_PASSWORD'
+function Get-NormalizedPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
     )
+
+    $Resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    $Separator = [System.IO.Path]::DirectorySeparatorChar
+    $Alternate = [System.IO.Path]::AltDirectorySeparatorChar
+    return ([System.IO.Path]::GetFullPath($Resolved).Replace($Alternate, $Separator)).TrimEnd($Separator)
+}
+
+function Test-PathWithinDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CandidatePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DirectoryPath
+    )
+
+    $Candidate = Get-NormalizedPath -Path $CandidatePath
+    $Directory = Get-NormalizedPath -Path $DirectoryPath
+    $Comparison = if ($env:OS -eq 'Windows_NT') {
+        [System.StringComparison]::OrdinalIgnoreCase
+    }
+    else {
+        [System.StringComparison]::Ordinal
+    }
+    $Separator = [System.IO.Path]::DirectorySeparatorChar
+
+    return $Candidate.Equals($Directory, $Comparison) -or
+        $Candidate.StartsWith($Directory + $Separator, $Comparison)
+}
+
+function Assert-KeystoreOutsideRepository {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$KeystorePath
+    )
+
+    if (Test-PathWithinDirectory -CandidatePath $KeystorePath -DirectoryPath $RepoRoot) {
+        throw 'POC signing keystore must be outside the repository, including ignored directories such as secrets and local-artifacts.'
+    }
+}
+
+function Clear-SigningEnvironment {
+    foreach ($Name in $SigningEnvironmentNames) {
+        [Environment]::SetEnvironmentVariable($Name, $null, 'Process')
+    }
+}
+
+function Get-SigningEnvironmentSnapshot {
     $Values = @{}
-    foreach ($Name in $EnvironmentNames) {
-        $Values[$Name] = [Environment]::GetEnvironmentVariable($Name)
+    foreach ($Name in $SigningEnvironmentNames) {
+        $Values[$Name] = [Environment]::GetEnvironmentVariable($Name, 'Process')
     }
 
     $Missing = @(
-        $EnvironmentNames |
+        $SigningEnvironmentNames |
             Where-Object { [string]::IsNullOrWhiteSpace($Values[$_]) }
     )
     if ($Missing.Count -ne 0) {
         throw (
             'The canonical signing helper requires all four WLB_POC_* signing ' +
-            'environment variables. Direct Gradle builds may use the ignored ' +
-            'android-app\keystore.properties fallback, but this helper deliberately ' +
-            'does not implement a second Java-properties parser. Missing: {0}' -f `
-            ($Missing -join ', ')
+            'environment variables. Use tools\invoke-poc-signing-smoke.ps1 for ' +
+            'interactive operator runs. Missing: {0}' -f ($Missing -join ', ')
         )
     }
 
@@ -165,16 +220,72 @@ function Get-SigningEnvironment {
     if (-not [System.IO.Path]::IsPathRooted($CandidatePath)) {
         $CandidatePath = Join-Path $RepoRoot $CandidatePath
     }
-    $ResolvedPath = [System.IO.Path]::GetFullPath($CandidatePath)
+    $ResolvedPath = (Resolve-Path -LiteralPath $CandidatePath -ErrorAction Stop).Path
     if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Leaf)) {
         throw ('POC keystore does not exist: {0}' -f $ResolvedPath)
     }
+    Assert-KeystoreOutsideRepository -KeystorePath $ResolvedPath
 
     return [pscustomobject]@{
         Path = $ResolvedPath
+        StorePassword = $Values['WLB_POC_KEYSTORE_PASSWORD']
         Alias = $Values['WLB_POC_KEY_ALIAS']
-        StorePasswordEnvironmentName = 'WLB_POC_KEYSTORE_PASSWORD'
+        KeyPassword = $Values['WLB_POC_KEY_PASSWORD']
     }
+}
+
+function Invoke-WithSigningEnvironment {
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$Signing,
+
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Action
+    )
+
+    try {
+        [Environment]::SetEnvironmentVariable('WLB_POC_KEYSTORE_PATH', $Signing.Path, 'Process')
+        [Environment]::SetEnvironmentVariable('WLB_POC_KEYSTORE_PASSWORD', $Signing.StorePassword, 'Process')
+        [Environment]::SetEnvironmentVariable('WLB_POC_KEY_ALIAS', $Signing.Alias, 'Process')
+        [Environment]::SetEnvironmentVariable('WLB_POC_KEY_PASSWORD', $Signing.KeyPassword, 'Process')
+        & $Action
+    }
+    finally {
+        Clear-SigningEnvironment
+    }
+}
+
+function Enter-RunLock {
+    $LockDirectory = Split-Path -Parent $RunLockPath
+    New-Item -ItemType Directory -Path $LockDirectory -Force | Out-Null
+
+    try {
+        $Stream = [System.IO.File]::Open(
+            $RunLockPath,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+    }
+    catch [System.IO.IOException] {
+        throw 'Another POC signing smoke is already running for this repository.'
+    }
+
+    $Bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$PID)
+    $Stream.SetLength(0)
+    $Stream.Write($Bytes, 0, $Bytes.Length)
+    $Stream.Flush()
+    return $Stream
+}
+
+function Exit-RunLock {
+    param([System.IO.FileStream]$Stream)
+
+    if ($null -ne $Stream) {
+        $Stream.Dispose()
+    }
+    # Keep the ignored lock file in place. Deleting it after releasing the
+    # handle would create a race on platforms that allow unlinking an open file.
 }
 
 function Invoke-AndroidGradle {
@@ -198,10 +309,7 @@ function Invoke-AndroidGradle {
 }
 
 function Get-PocIdentity {
-    param(
-        [Parameter(Mandatory = $true)]
-        [int]$BuildNumber
-    )
+    param([Parameter(Mandatory = $true)][int]$BuildNumber)
 
     $PreviousBuildNumber = $env:WLB_POC_BUILD_NUMBER
     try {
@@ -242,20 +350,11 @@ function Get-PocIdentity {
 
 function Get-ApkEvidence {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$ApkPath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$ExpectedCertificateSha256,
-
-        [Parameter(Mandatory = $true)]
-        [pscustomobject]$ExpectedIdentity,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Aapt,
-
-        [Parameter(Mandatory = $true)]
-        [string]$ApkSigner
+        [Parameter(Mandatory = $true)][string]$ApkPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedCertificateSha256,
+        [Parameter(Mandatory = $true)][pscustomobject]$ExpectedIdentity,
+        [Parameter(Mandatory = $true)][string]$Aapt,
+        [Parameter(Mandatory = $true)][string]$ApkSigner
     )
 
     $CertificateOutput = @(
@@ -265,7 +364,6 @@ function Get-ApkEvidence {
             -CaptureOutput
     )
     $CertificateText = $CertificateOutput -join "`n"
-
     $SignerCountMatch = [regex]::Match(
         $CertificateText,
         '(?m)^Number of signers:\s*(\d+)\s*$'
@@ -287,7 +385,7 @@ function Get-ApkEvidence {
         throw ('APK must contain exactly one unique signer certificate: {0}' -f $ApkPath)
     }
     if ($SignerDigests[0] -ne $ExpectedCertificateSha256) {
-        throw ('APK signer certificate does not match the configured POC keystore: {0}' -f $ApkPath)
+        throw ('APK signer certificate does not match the pinned POC signing identity: {0}' -f $ApkPath)
     }
 
     $BadgingOutput = @(
@@ -338,14 +436,11 @@ function Get-ApkEvidence {
 
 function Write-Utf8NoBomJson {
     param(
-        [Parameter(Mandatory = $true)]
-        [object]$Value,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Path
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Path
     )
 
-    $Json = $Value | ConvertTo-Json -Depth 5
+    $Json = $Value | ConvertTo-Json -Depth 6
     $Utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
     [System.IO.File]::WriteAllText(
         $Path,
@@ -354,31 +449,45 @@ function Write-Utf8NoBomJson {
     )
 }
 
+function Export-SigningCertificate {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$Signing,
+        [Parameter(Mandatory = $true)][string]$CertificatePath,
+        [Parameter(Mandatory = $true)][string]$KeyTool
+    )
+
+    $PasswordEnvironmentName = 'WLB_POC_KEYTOOL_STORE_PASSWORD_' + [guid]::NewGuid().ToString('N')
+    try {
+        [Environment]::SetEnvironmentVariable(
+            $PasswordEnvironmentName,
+            $Signing.StorePassword,
+            'Process'
+        )
+        Invoke-NativeCommand -Command $KeyTool -Arguments @(
+            '-exportcert',
+            '-storetype', 'PKCS12',
+            '-keystore', $Signing.Path,
+            '-alias', $Signing.Alias,
+            '-storepass:env', $PasswordEnvironmentName,
+            '-file', $CertificatePath
+        )
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable($PasswordEnvironmentName, $null, 'Process')
+    }
+}
+
 function Build-PocIntoStaging {
     param(
-        [Parameter(Mandatory = $true)]
-        [int]$BuildNumber,
-
-        [Parameter(Mandatory = $true)]
-        [pscustomobject]$Identity,
-
-        [Parameter(Mandatory = $true)]
-        [string]$RunStagingRoot,
-
-        [Parameter(Mandatory = $true)]
-        [string]$SourceCommit,
-
-        [Parameter(Mandatory = $true)]
-        [string]$SourceTree,
-
-        [Parameter(Mandatory = $true)]
-        [string]$ExpectedCertificateSha256,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Aapt,
-
-        [Parameter(Mandatory = $true)]
-        [string]$ApkSigner
+        [Parameter(Mandatory = $true)][int]$BuildNumber,
+        [Parameter(Mandatory = $true)][pscustomobject]$Identity,
+        [Parameter(Mandatory = $true)][string]$RunStagingRoot,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$SourceTree,
+        [Parameter(Mandatory = $true)][string]$ExpectedCertificateSha256,
+        [Parameter(Mandatory = $true)][pscustomobject]$Signing,
+        [Parameter(Mandatory = $true)][string]$Aapt,
+        [Parameter(Mandatory = $true)][string]$ApkSigner
     )
 
     $PreviousBuildNumber = $env:WLB_POC_BUILD_NUMBER
@@ -389,10 +498,13 @@ function Build-PocIntoStaging {
             -Recurse `
             -Force `
             -ErrorAction SilentlyContinue
-        Invoke-AndroidGradle -Arguments @('--no-daemon', ':app:assemblePoc')
+        Invoke-WithSigningEnvironment -Signing $Signing -Action {
+            Invoke-AndroidGradle -Arguments @('--no-daemon', ':app:assemblePoc')
+        }
     }
     finally {
         $env:WLB_POC_BUILD_NUMBER = $PreviousBuildNumber
+        Clear-SigningEnvironment
     }
 
     Assert-SourceUnchanged `
@@ -423,7 +535,7 @@ function Build-PocIntoStaging {
         -Stage ('before manifest {0}' -f $BuildNumber)
 
     $Manifest = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         applicationId = $Evidence.ApplicationId
         version = $Evidence.VersionName
         versionCode = $Evidence.VersionCode
@@ -433,6 +545,7 @@ function Build-PocIntoStaging {
         apkSha256 = $Evidence.ApkSha256
         certificateSha256 = $Evidence.CertificateSha256
         debuggable = $Evidence.Debuggable
+        androidBuildToolsVersion = $PinnedBuildToolsVersion
         builtAtUtc = [DateTime]::UtcNow.ToString('o')
     }
     Write-Utf8NoBomJson `
@@ -447,15 +560,9 @@ function Build-PocIntoStaging {
 
 function Accept-StagedArtifactPair {
     param(
-        [Parameter(Mandatory = $true)]
-        [string[]]$StagedDirectories,
-
-        [Parameter(Mandatory = $true)]
-        [string[]]$FinalDirectories,
-
-        [Parameter(Mandatory = $true)]
-        [scriptblock]$Finalize,
-
+        [Parameter(Mandatory = $true)][string[]]$StagedDirectories,
+        [Parameter(Mandatory = $true)][string[]]$FinalDirectories,
+        [Parameter(Mandatory = $true)][scriptblock]$Finalize,
         [ValidateSet('None', 'AfterFirstMove', 'AfterSecondMove')]
         [string]$InjectedFailurePoint = 'None'
     )
@@ -467,20 +574,14 @@ function Accept-StagedArtifactPair {
     $AcceptedDirectories = @()
     $AcceptanceComplete = $false
     try {
-        Move-Item `
-            -LiteralPath $StagedDirectories[0] `
-            -Destination $FinalDirectories[0]
+        Move-Item -LiteralPath $StagedDirectories[0] -Destination $FinalDirectories[0]
         $AcceptedDirectories += $FinalDirectories[0]
-
         if ($InjectedFailurePoint -eq 'AfterFirstMove') {
             throw 'Injected rollback regression after first artifact move.'
         }
 
-        Move-Item `
-            -LiteralPath $StagedDirectories[1] `
-            -Destination $FinalDirectories[1]
+        Move-Item -LiteralPath $StagedDirectories[1] -Destination $FinalDirectories[1]
         $AcceptedDirectories += $FinalDirectories[1]
-
         if ($InjectedFailurePoint -eq 'AfterSecondMove') {
             throw 'Injected rollback regression after second artifact move.'
         }
@@ -501,10 +602,13 @@ function Accept-StagedArtifactPair {
     }
 }
 
-function Invoke-AcceptanceRollbackSelfTest {
+function Invoke-SafetySelfTests {
     $SelfTestRoot = Join-Path `
         $ArtifactsRoot `
-        ('.rollback-self-test-' + [guid]::NewGuid().ToString('N'))
+        ('.safety-self-test-' + [guid]::NewGuid().ToString('N'))
+    $OutsideFile = Join-Path `
+        ([System.IO.Path]::GetTempPath()) `
+        ('wlb-poc-outside-' + [guid]::NewGuid().ToString('N') + '.keystore')
 
     try {
         foreach ($Scenario in @('AfterFirstMove', 'AfterSecondMove', 'FinalizeFailure')) {
@@ -519,28 +623,19 @@ function Invoke-AcceptanceRollbackSelfTest {
                 Join-Path $FinalRoot 'first'
                 Join-Path $FinalRoot 'second'
             )
-
             New-Item -ItemType Directory -Path $StagedDirectories[0] -Force | Out-Null
             New-Item -ItemType Directory -Path $StagedDirectories[1] -Force | Out-Null
             New-Item -ItemType Directory -Path $FinalRoot -Force | Out-Null
-            Set-Content -LiteralPath (Join-Path $StagedDirectories[0] 'marker.txt') -Value 'first'
-            Set-Content -LiteralPath (Join-Path $StagedDirectories[1] 'marker.txt') -Value 'second'
 
             $FailureObserved = $false
             try {
-                $FailurePoint = if ($Scenario -eq 'FinalizeFailure') {
-                    'None'
-                }
-                else {
-                    $Scenario
-                }
+                $FailurePoint = if ($Scenario -eq 'FinalizeFailure') { 'None' } else { $Scenario }
                 $Finalize = if ($Scenario -eq 'FinalizeFailure') {
                     { throw 'Injected rollback regression from final validation.' }
                 }
                 else {
                     { }
                 }
-
                 Accept-StagedArtifactPair `
                     -StagedDirectories $StagedDirectories `
                     -FinalDirectories $FinalDirectories `
@@ -561,20 +656,113 @@ function Invoke-AcceptanceRollbackSelfTest {
             }
         }
 
-        Write-Host '[POC_SIGNING_ROLLBACK_SELF_TEST] PASS'
+        $FirstLock = Enter-RunLock
+        try {
+            $SecondLockRejected = $false
+            try {
+                $SecondLock = Enter-RunLock
+                Exit-RunLock -Stream $SecondLock
+            }
+            catch {
+                $SecondLockRejected = $_.Exception.Message -like '*already running*'
+            }
+            if (-not $SecondLockRejected) {
+                throw 'Exclusive-run-lock self-test did not reject a second holder.'
+            }
+        }
+        finally {
+            Exit-RunLock -Stream $FirstLock
+        }
+
+        $InsideDirectory = Join-Path $SelfTestRoot 'inside-repository'
+        New-Item -ItemType Directory -Path $InsideDirectory -Force | Out-Null
+        $InsideFile = Join-Path $InsideDirectory 'test.keystore'
+        Set-Content -LiteralPath $InsideFile -Value 'test'
+        $InsideRejected = $false
+        try {
+            Assert-KeystoreOutsideRepository -KeystorePath $InsideFile
+        }
+        catch {
+            $InsideRejected = $_.Exception.Message -like '*must be outside the repository*'
+        }
+        if (-not $InsideRejected) {
+            throw 'Repository-keystore-boundary self-test did not reject an internal file.'
+        }
+
+        Set-Content -LiteralPath $OutsideFile -Value 'test'
+        Assert-KeystoreOutsideRepository -KeystorePath $OutsideFile
+
+        [Environment]::SetEnvironmentVariable('WLB_POC_KEYSTORE_PATH', $OutsideFile, 'Process')
+        [Environment]::SetEnvironmentVariable('WLB_POC_KEYSTORE_PASSWORD', 'synthetic-store', 'Process')
+        [Environment]::SetEnvironmentVariable('WLB_POC_KEY_ALIAS', 'synthetic-alias', 'Process')
+        [Environment]::SetEnvironmentVariable('WLB_POC_KEY_PASSWORD', 'synthetic-key', 'Process')
+        $Snapshot = Get-SigningEnvironmentSnapshot
+        Clear-SigningEnvironment
+        foreach ($Name in $SigningEnvironmentNames) {
+            if (-not [string]::IsNullOrEmpty(
+                [Environment]::GetEnvironmentVariable($Name, 'Process')
+            )) {
+                throw ('Signing environment cleanup self-test failed: {0}' -f $Name)
+            }
+        }
+        if ($env:OS -eq 'Windows_NT') {
+            $ChildLeakCount = & powershell.exe -NoProfile -Command @'
+$Names = @(
+  'WLB_POC_KEYSTORE_PATH',
+  'WLB_POC_KEYSTORE_PASSWORD',
+  'WLB_POC_KEY_ALIAS',
+  'WLB_POC_KEY_PASSWORD'
+)
+@($Names | Where-Object {
+  -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($_, 'Process'))
+}).Count
+'@
+            if ([int]$ChildLeakCount -ne 0) {
+                throw 'Signing environment cleanup self-test leaked values to a child process.'
+            }
+        }
+        $Snapshot.StorePassword = $null
+        $Snapshot.KeyPassword = $null
+
+        Write-Host '[POC_SIGNING_SAFETY_SELF_TEST] PASS'
     }
     finally {
-        Remove-Item `
-            -LiteralPath $SelfTestRoot `
-            -Recurse `
-            -Force `
-            -ErrorAction SilentlyContinue
+        Clear-SigningEnvironment
+        Remove-Item -LiteralPath $SelfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $OutsideFile -Force -ErrorAction SilentlyContinue
     }
 }
 
-if ($RunAcceptanceRollbackSelfTest) {
-    Invoke-AcceptanceRollbackSelfTest
+if ($RunSafetySelfTests) {
+    Invoke-SafetySelfTests
     return
+}
+
+if ($SecondBuildNumber -le $FirstBuildNumber) {
+    throw 'SecondBuildNumber must be greater than FirstBuildNumber.'
+}
+if ([string]::IsNullOrWhiteSpace($ExpectedCertificateSha256)) {
+    throw 'ExpectedCertificateSha256 is required for every accepted POC signing smoke.'
+}
+$ExpectedCertificateSha256 = $ExpectedCertificateSha256.ToLowerInvariant()
+
+if ($AllowSyntheticCiCertificate -and $env:GITHUB_ACTIONS -ne 'true') {
+    throw 'AllowSyntheticCiCertificate is restricted to GitHub Actions.'
+}
+
+if ((Test-Path -LiteralPath $PublicIdentityPath -PathType Leaf) -and
+    (-not $AllowSyntheticCiCertificate)) {
+    $PublicIdentity = Get-Content -LiteralPath $PublicIdentityPath -Raw | ConvertFrom-Json
+    if ($PublicIdentity.schemaVersion -ne 1 -or
+        $PublicIdentity.applicationId -ne 'bypass.whitelist' -or
+        $PublicIdentity.androidBuildToolsVersion -ne $PinnedBuildToolsVersion -or
+        [string]$PublicIdentity.certificateSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+        throw 'android-app\poc-signing-identity.json has an invalid schema.'
+    }
+    if (([string]$PublicIdentity.certificateSha256).ToLowerInvariant() -ne
+        $ExpectedCertificateSha256) {
+        throw 'ExpectedCertificateSha256 does not match the committed public POC signing identity.'
+    }
 }
 
 if (-not (Test-Path -LiteralPath $Gradle -PathType Leaf)) {
@@ -583,88 +771,88 @@ if (-not (Test-Path -LiteralPath $Gradle -PathType Leaf)) {
 
 $script:Git = Get-RequiredCommandPath @('git.exe', 'git')
 $KeyTool = Get-RequiredCommandPath @('keytool.exe', 'keytool')
-$Signing = Get-SigningEnvironment
+$RunLock = $null
+$Signing = $null
+$RunStagingRoot = $null
+$CertificatePath = $null
 
-$SdkRoot = if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_HOME)) {
-    $env:ANDROID_HOME
-}
-else {
-    Join-Path $env:LOCALAPPDATA 'Android\Sdk'
-}
-$BuildToolsRoot = Join-Path $SdkRoot ('build-tools\{0}' -f $BuildToolsVersion)
-$Aapt = Join-Path $BuildToolsRoot 'aapt.exe'
-$ApkSigner = Join-Path $BuildToolsRoot 'apksigner.bat'
+try {
+    $RunLock = Enter-RunLock
+    $Signing = Get-SigningEnvironmentSnapshot
+    Clear-SigningEnvironment
 
-if (-not (Test-Path -LiteralPath $Aapt -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $ApkSigner -PathType Leaf)) {
-    throw ('Pinned Android build-tools {0} were not found under {1}.' -f `
-        $BuildToolsVersion,
-        $BuildToolsRoot)
-}
-
-$InitialStatus = @(Get-SourceStatus)
-if ($InitialStatus.Count -ne 0) {
-    throw ("Tracked/non-ignored-untracked source tree must be clean before POC artifact production:`n{0}" -f `
-        ($InitialStatus -join [Environment]::NewLine))
-}
-
-$SourceCommit = Get-CurrentCommit
-$SourceTree = Get-CurrentTree
-$FirstIdentity = Get-PocIdentity -BuildNumber $FirstBuildNumber
-$SecondIdentity = Get-PocIdentity -BuildNumber $SecondBuildNumber
-
-if ($SecondIdentity.VersionCode -le $FirstIdentity.VersionCode) {
-    throw 'Second POC versionCode must be greater than the first POC versionCode.'
-}
-
-$FinalDirectories = @(
-    Join-Path $ArtifactsRoot $FirstIdentity.VersionName
-    Join-Path $ArtifactsRoot $SecondIdentity.VersionName
-)
-foreach ($Directory in $FinalDirectories) {
-    if (Test-Path -LiteralPath $Directory) {
-        throw ('Refusing to reuse existing smoke artifact directory: {0}' -f $Directory)
+    $SdkRoot = if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_HOME)) {
+        $env:ANDROID_HOME
     }
-}
+    else {
+        Join-Path $env:LOCALAPPDATA 'Android\Sdk'
+    }
+    $BuildToolsRoot = Join-Path $SdkRoot ('build-tools\{0}' -f $PinnedBuildToolsVersion)
+    $Aapt = Join-Path $BuildToolsRoot 'aapt.exe'
+    $ApkSigner = Join-Path $BuildToolsRoot 'apksigner.bat'
+    if (-not (Test-Path -LiteralPath $Aapt -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $ApkSigner -PathType Leaf)) {
+        throw ('Pinned Android build-tools {0} were not found under {1}.' -f `
+            $PinnedBuildToolsVersion,
+            $BuildToolsRoot)
+    }
 
-Assert-SourceUnchanged `
-    -ExpectedCommit $SourceCommit `
-    -ExpectedTree $SourceTree `
-    -Stage 'before quality checks'
+    $InitialStatus = @(Get-SourceStatus)
+    if ($InitialStatus.Count -ne 0) {
+        throw ("Tracked/non-ignored-untracked source tree must be clean before POC artifact production:`n{0}" -f `
+            ($InitialStatus -join [Environment]::NewLine))
+    }
 
-if (-not $SkipQualityChecks) {
-    Invoke-AndroidGradle -Arguments @('--no-daemon', 'test')
-    Invoke-AndroidGradle -Arguments @('--no-daemon', 'lint')
-    Invoke-AndroidGradle -Arguments @('--no-daemon', 'assembleDebug')
+    $SourceCommit = Get-CurrentCommit
+    $SourceTree = Get-CurrentTree
+    $FirstIdentity = Get-PocIdentity -BuildNumber $FirstBuildNumber
+    $SecondIdentity = Get-PocIdentity -BuildNumber $SecondBuildNumber
+    if ($SecondIdentity.VersionCode -le $FirstIdentity.VersionCode) {
+        throw 'Second POC versionCode must be greater than the first POC versionCode.'
+    }
+
+    $FinalDirectories = @(
+        Join-Path $ArtifactsRoot $FirstIdentity.VersionName
+        Join-Path $ArtifactsRoot $SecondIdentity.VersionName
+    )
+    foreach ($Directory in $FinalDirectories) {
+        if (Test-Path -LiteralPath $Directory) {
+            throw ('Refusing to reuse existing smoke artifact directory: {0}' -f $Directory)
+        }
+    }
 
     Assert-SourceUnchanged `
         -ExpectedCommit $SourceCommit `
         -ExpectedTree $SourceTree `
-        -Stage 'after quality checks'
-}
+        -Stage 'before quality checks'
 
-New-Item -ItemType Directory -Path $ArtifactsRoot -Force | Out-Null
-$RunStagingRoot = Join-Path $ArtifactsRoot ('.run-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $RunStagingRoot | Out-Null
+    if (-not $SkipQualityChecks) {
+        Invoke-AndroidGradle -Arguments @('--no-daemon', 'test')
+        Invoke-AndroidGradle -Arguments @('--no-daemon', 'lint')
+        Invoke-AndroidGradle -Arguments @('--no-daemon', 'assembleDebug')
+        Assert-SourceUnchanged `
+            -ExpectedCommit $SourceCommit `
+            -ExpectedTree $SourceTree `
+            -Stage 'after quality checks'
+    }
 
-$CertificatePath = Join-Path `
-    $env:TEMP `
-    ('wlb-poc-signing-' + [guid]::NewGuid().ToString('N') + '.der')
+    New-Item -ItemType Directory -Path $ArtifactsRoot -Force | Out-Null
+    $RunStagingRoot = Join-Path $ArtifactsRoot ('.run-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $RunStagingRoot | Out-Null
+    $CertificatePath = Join-Path `
+        $env:TEMP `
+        ('wlb-poc-signing-' + [guid]::NewGuid().ToString('N') + '.der')
 
-try {
-    $CertificateArguments = @(
-        '-exportcert',
-        '-storetype', 'PKCS12',
-        '-keystore', $Signing.Path,
-        '-alias', $Signing.Alias,
-        '-storepass:env', $Signing.StorePasswordEnvironmentName,
-        '-file', $CertificatePath
-    )
-    Invoke-NativeCommand -Command $KeyTool -Arguments $CertificateArguments
-
-    $ExpectedCertificateSha256 = (
+    Export-SigningCertificate `
+        -Signing $Signing `
+        -CertificatePath $CertificatePath `
+        -KeyTool $KeyTool
+    $ActualCertificateSha256 = (
         Get-FileHash -LiteralPath $CertificatePath -Algorithm SHA256
     ).Hash.ToLowerInvariant()
+    if ($ActualCertificateSha256 -ne $ExpectedCertificateSha256) {
+        throw 'Configured POC keystore certificate does not match the pinned public signing identity.'
+    }
 
     $FirstStaged = Build-PocIntoStaging `
         -BuildNumber $FirstBuildNumber `
@@ -673,6 +861,7 @@ try {
         -SourceCommit $SourceCommit `
         -SourceTree $SourceTree `
         -ExpectedCertificateSha256 $ExpectedCertificateSha256 `
+        -Signing $Signing `
         -Aapt $Aapt `
         -ApkSigner $ApkSigner
 
@@ -683,6 +872,7 @@ try {
         -SourceCommit $SourceCommit `
         -SourceTree $SourceTree `
         -ExpectedCertificateSha256 $ExpectedCertificateSha256 `
+        -Signing $Signing `
         -Aapt $Aapt `
         -ApkSigner $ApkSigner
 
@@ -706,6 +896,7 @@ try {
         Write-Host '[POC_SIGNING_SMOKE] PASS'
         Write-Host ('Commit: {0}' -f $SourceCommit)
         Write-Host ('Tree:   {0}' -f $SourceTree)
+        Write-Host ('Signer: {0}' -f $ExpectedCertificateSha256)
         Write-Host ('First:  {0}' -f $FinalDirectories[0])
         Write-Host ('Second: {0}' -f $FinalDirectories[1])
     }
@@ -719,10 +910,18 @@ try {
         -Finalize $FinalizeAcceptance
 }
 finally {
-    if (Test-Path -LiteralPath $CertificatePath) {
+    Clear-SigningEnvironment
+    if ($null -ne $Signing) {
+        $Signing.StorePassword = $null
+        $Signing.KeyPassword = $null
+    }
+    if ($CertificatePath -and (Test-Path -LiteralPath $CertificatePath)) {
         Remove-Item -LiteralPath $CertificatePath -Force
     }
-    if (Test-Path -LiteralPath $RunStagingRoot) {
+    if ($RunStagingRoot -and (Test-Path -LiteralPath $RunStagingRoot)) {
         Remove-Item -LiteralPath $RunStagingRoot -Recurse -Force
+    }
+    if ($null -ne $RunLock) {
+        Exit-RunLock -Stream $RunLock
     }
 }
