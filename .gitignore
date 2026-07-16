@@ -1,8 +1,194 @@
+# =============================================================================
+# Operating systems
+# =============================================================================
+
 .DS_Store
-relay/mobile.aar
-relay/mobile-sources.jar
-relay/relay-*
-prebuilts/
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+
+# =============================================================================
+# IDEs and editors
+# =============================================================================
+
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+
+# =============================================================================
+# Local secrets and machine-specific configuration
+# =============================================================================
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Canonical local-only directories
+/secrets/
+/local-secrets/
+/credentials/
+/local-config/
+
+# Local variants of scripts/configs
+*.local.json
+*.local.properties
+*.local.ps1
+*.local.cmd
+.npmrc.local
+
+# Android signing configuration
+**/keystore.properties
+**/signing.properties
+**/vkid.local.properties
+**/vk-poc.local.properties
+
+# Private keys and signing containers
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pkcs12
+*.ks
+*.bcfks
+*.pem
+*.key
+
+
+# =============================================================================
+# Creator runtime data and credential material
+# =============================================================================
+
+# Legacy or accidentally copied cookie material
 cookies*.json
-relay/relay
-whitelist-experiments/
+cookies.zip
+
+# Electron protected settings must stay in Windows userData, never in Git
+protected-settings.v*.json
+protected-settings.v*.json.*
+
+# Local Electron profiles, should a custom userData path be placed in the repo
+/creator-user-data/
+/electron-user-data/
+/test-user-data/
+
+
+# =============================================================================
+# Logs, diagnostics, dumps and temporary files
+# =============================================================================
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+*.dmp
+*.stackdump
+*.hprof
+
+*.tmp
+*.temp
+*.bak
+
+coverage/
+*.lcov
+coverage*.out
+*.prof
+*.test
+*.tsbuildinfo
+
+
+# =============================================================================
+# Node.js / Electron Creator
+# =============================================================================
+
+/creator-app/node_modules/
+/creator-app/dist/
+/creator-app/.test-dist/
+/creator-app/coverage/
+
+# electron-builder output
+/prebuilts/
+
+# Canonical POC signing evidence and future source-free live bundles
+/live-bundles/
+/release-bundles/
+/local-artifacts/
+
+
+# =============================================================================
+# Android / Gradle
+# =============================================================================
+
+/android-app/.gradle/
+/android-app/.idea/
+/android-app/local.properties
+/android-app/**/build/
+/android-app/.externalNativeBuild/
+/android-app/.cxx/
+/android-app/.kotlin/
+/android-app/captures/
+/android-app/app/release/
+
+# Manually copied Android artifacts
+*.apk
+*.aab
+*.apks
+
+
+# =============================================================================
+# Go / gomobile generated outputs
+# =============================================================================
+
+/relay/mobile.aar
+/relay/mobile-sources.jar
+
+# Relay outputs from local and cross-platform build scripts. The broad rule is
+# intentional because build-creator.sh can exit before its final cleanup step.
+/relay/relay
+/relay/relay.exe
+/relay/relay-*
+
+# Creator packaging inputs generated from the Go modules
+/headless/headless-*-bundle
+/headless/headless-*-bundle.exe
+
+# Root-level cross-platform outputs produced by build-creator.sh
+/headless/headless-*-darwin*
+/headless/headless-*-windows-*.exe
+/headless/headless-*-linux-*
+
+# Module-local compiled creator/joiner/bot binaries
+/headless/*/headless-*-creator
+/headless/*/headless-*-creator.exe
+/headless/*/headless-*-joiner
+/headless/*/headless-*-joiner.exe
+/headless/vk-bot/headless-vk-bot
+/headless/vk-bot/headless-vk-bot.exe
+
+
+# =============================================================================
+# Temporary patch-transfer and audit machinery
+# =============================================================================
+
+/.github/patches/
+/.github/workflows/temp-*.yml
+/.github/workflows/temp-*.yaml
+
+*.mbox
+
+
+# =============================================================================
+# Project-local experiments
+# =============================================================================
+
+/whitelist-experiments/

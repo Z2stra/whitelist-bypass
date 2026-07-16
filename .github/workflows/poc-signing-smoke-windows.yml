@@ -1,0 +1,470 @@
+name: Windows POC signing smoke
+
+on:
+  pull_request:
+    paths:
+      - ".gitignore"
+      - "android-app/**"
+      - "tools/preserve-poc-signing-smoke.ps1"
+      - "tools/invoke-poc-signing-smoke.ps1"
+      - ".github/workflows/android-quality.yml"
+      - ".github/workflows/poc-signing-smoke-windows.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".gitignore"
+      - "android-app/**"
+      - "tools/preserve-poc-signing-smoke.ps1"
+      - "tools/invoke-poc-signing-smoke.ps1"
+      - ".github/workflows/android-quality.yml"
+      - ".github/workflows/poc-signing-smoke-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-poc-signing-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  poc-signing-smoke-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      ANDROID_BUILD_TOOLS_VERSION: "36.0.0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Parse PowerShell signing entrypoints
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($Path in @(
+            '.\tools\preserve-poc-signing-smoke.ps1',
+            '.\tools\invoke-poc-signing-smoke.ps1'
+          )) {
+            $Tokens = $null
+            $Errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $Path).Path,
+              [ref]$Tokens,
+              [ref]$Errors
+            ) | Out-Null
+            if ($Errors.Count -gt 0) {
+              $Errors | ForEach-Object { Write-Error "$Path`: $($_.Message)" }
+              throw "PowerShell parse failed: $Path"
+            }
+          }
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Install pinned Android SDK tools
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $SdkManager = (Get-Command sdkmanager.bat -ErrorAction Stop).Source
+
+          $LicenseInput = ((1..100 | ForEach-Object { 'y' }) -join [Environment]::NewLine)
+          $PreviousPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = 'Continue'
+            $LicenseInput | & $SdkManager --licenses | Out-Null
+            $LicenseExitCode = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $PreviousPreference
+          }
+          if ($LicenseExitCode -ne 0) {
+            throw 'Android SDK license acceptance failed'
+          }
+
+          & $SdkManager `
+            'platform-tools' `
+            'platforms;android-36' `
+            "build-tools;$env:ANDROID_BUILD_TOOLS_VERSION"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Pinned Android SDK installation failed'
+          }
+
+          $BuildTools = Join-Path `
+            $env:ANDROID_HOME `
+            "build-tools\$env:ANDROID_BUILD_TOOLS_VERSION"
+          foreach ($Tool in @('aapt.exe', 'apksigner.bat')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $BuildTools $Tool) -PathType Leaf)) {
+              throw "Pinned Android build tool was not found: $Tool"
+            }
+          }
+
+      - name: Verify helper safety boundaries
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PreviousPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = 'Continue'
+            $Output = @(& powershell.exe `
+              -NoProfile `
+              -ExecutionPolicy Bypass `
+              -File .\tools\preserve-poc-signing-smoke.ps1 `
+              -RunSafetySelfTests 2>&1)
+            $ExitCode = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $PreviousPreference
+          }
+          $Output | ForEach-Object { Write-Host $_ }
+          if ($ExitCode -ne 0 -or
+              -not ($Output -match '\[POC_SIGNING_SAFETY_SELF_TEST\] PASS')) {
+            throw 'POC signing helper safety regression failed'
+          }
+
+      - name: Run operator pre-prompt quality phase
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PreviousPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = 'Continue'
+            $Output = @(& powershell.exe `
+              -NoProfile `
+              -ExecutionPolicy Bypass `
+              -File .\tools\invoke-poc-signing-smoke.ps1 `
+              -RunQualityGateOnly 2>&1)
+            $ExitCode = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $PreviousPreference
+          }
+          $Output | ForEach-Object { Write-Host $_ }
+          if ($ExitCode -ne 0 -or
+              -not ($Output -match '\[POC_SIGNING_OPERATOR_QUALITY\] PASS')) {
+            throw 'Operator pre-prompt Android quality phase failed'
+          }
+
+      - name: Generate disposable Windows-only POC key and public identity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $KeystorePath = Join-Path $env:RUNNER_TEMP 'wlb-ci-poc.keystore'
+          $CertificatePath = Join-Path $env:RUNNER_TEMP 'wlb-ci-poc.cer'
+          $Password = 'ci-only-poc-password'
+          $Alias = 'wlb-ci-poc'
+
+          $EnvironmentLines = @(
+            "WLB_POC_KEYSTORE_PATH=$KeystorePath",
+            "WLB_POC_KEYSTORE_PASSWORD=$Password",
+            "WLB_POC_KEY_ALIAS=$Alias",
+            "WLB_POC_KEY_PASSWORD=$Password"
+          )
+          $EnvironmentLines | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $env:WLB_POC_KEYSTORE_PATH = $KeystorePath
+          $env:WLB_POC_KEYSTORE_PASSWORD = $Password
+          $env:WLB_POC_KEY_ALIAS = $Alias
+          $env:WLB_POC_KEY_PASSWORD = $Password
+
+          $GenerateArguments = @(
+            '-genkeypair',
+            '-noprompt',
+            '-storetype', 'PKCS12',
+            '-keystore', $KeystorePath,
+            '-storepass:env', 'WLB_POC_KEYSTORE_PASSWORD',
+            '-keypass:env', 'WLB_POC_KEY_PASSWORD',
+            '-alias', $Alias,
+            '-keyalg', 'RSA',
+            '-keysize', '3072',
+            '-validity', '2',
+            '-dname', 'CN=CI POC, OU=Ephemeral, O=Whitelist Bypass, L=Test, ST=Test, C=US'
+          )
+          & keytool.exe @GenerateArguments
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Disposable Windows POC key generation failed'
+          }
+
+          & keytool.exe `
+            -exportcert `
+            -storetype PKCS12 `
+            -keystore $KeystorePath `
+            -storepass:env WLB_POC_KEYSTORE_PASSWORD `
+            -alias $Alias `
+            -file $CertificatePath
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Disposable Windows POC certificate export failed'
+          }
+
+          $Digest = (Get-FileHash -LiteralPath $CertificatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "WLB_POC_EXPECTED_CERTIFICATE_SHA256=$Digest" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run signed low-level helper after verified quality phase
+        id: helper
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $LogPath = Join-Path $env:RUNNER_TEMP 'poc-signing-helper.log'
+          $Stdout = Join-Path $env:RUNNER_TEMP 'poc-helper.stdout.log'
+          $Stderr = Join-Path $env:RUNNER_TEMP 'poc-helper.stderr.log'
+          New-Item -ItemType File -Path $LogPath -Force | Out-Null
+
+          $Arguments = @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', '.\tools\preserve-poc-signing-smoke.ps1',
+            '-FirstBuildNumber', '901',
+            '-SecondBuildNumber', '902',
+            '-ExpectedCertificateSha256', $env:WLB_POC_EXPECTED_CERTIFICATE_SHA256,
+            '-AllowSyntheticCiCertificate',
+            '-SkipQualityChecks'
+          )
+          $Process = Start-Process `
+            -FilePath powershell.exe `
+            -ArgumentList $Arguments `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $Stdout `
+            -RedirectStandardError $Stderr
+
+          $Output = @()
+          foreach ($Path in @($Stdout, $Stderr)) {
+            if (Test-Path -LiteralPath $Path) {
+              $Output += Get-Content -LiteralPath $Path
+            }
+          }
+          $Output | Set-Content -LiteralPath $LogPath -Encoding UTF8
+          $Output | ForEach-Object { Write-Host $_ }
+
+          if ($Process.ExitCode -ne 0) {
+            throw "POC signing helper failed with exit code $($Process.ExitCode)"
+          }
+          if (-not ($Output -match '\[POC_SIGNING_SMOKE\] PASS')) {
+            throw 'POC signing helper did not report PASS'
+          }
+
+      - name: Independently verify helper APK evidence and manifests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $BuildTools = Join-Path `
+            $env:ANDROID_HOME `
+            "build-tools\$env:ANDROID_BUILD_TOOLS_VERSION"
+          $Aapt = Join-Path $BuildTools 'aapt.exe'
+          $ApkSigner = Join-Path $BuildTools 'apksigner.bat'
+          $CertificatePath = Join-Path $env:RUNNER_TEMP 'wlb-ci-poc.cer'
+
+          function Invoke-NativeCapture {
+            param(
+              [Parameter(Mandatory = $true)] [string]$Command,
+              [Parameter(Mandatory = $true)] [string[]]$Arguments
+            )
+            $PreviousPreference = $ErrorActionPreference
+            try {
+              $ErrorActionPreference = 'Continue'
+              $Output = @(& $Command @Arguments 2>&1)
+              $ExitCode = $LASTEXITCODE
+            }
+            finally {
+              $ErrorActionPreference = $PreviousPreference
+            }
+            if ($ExitCode -ne 0) {
+              $Output | ForEach-Object { Write-Host $_ }
+              throw "Native verification command failed with exit code $ExitCode`: $Command"
+            }
+            return @($Output | ForEach-Object { $_.ToString() })
+          }
+
+          $ExpectedCertificateSha256 = (
+            Get-FileHash -LiteralPath $CertificatePath -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+          if ($ExpectedCertificateSha256 -ne $env:WLB_POC_EXPECTED_CERTIFICATE_SHA256) {
+            throw 'CI public signing identity changed between steps'
+          }
+
+          $Commit = (git rev-parse HEAD).Trim()
+          $Tree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not read Git provenance'
+          }
+
+          $Expected = @(
+            [pscustomobject]@{ Version = '0.3.7-poc.901'; VersionCode = 3007901 },
+            [pscustomobject]@{ Version = '0.3.7-poc.902'; VersionCode = 3007902 }
+          )
+          $AllowedKeys = @(
+            'schemaVersion',
+            'applicationId',
+            'version',
+            'versionCode',
+            'gitCommit',
+            'gitTree',
+            'apk',
+            'apkSha256',
+            'certificateSha256',
+            'debuggable',
+            'androidBuildToolsVersion',
+            'builtAtUtc'
+          ) | Sort-Object
+
+          $ObservedCertificates = @()
+          foreach ($Item in $Expected) {
+            $Directory = Join-Path '.\local-artifacts\poc-signing-smoke' $Item.Version
+            $ManifestPath = Join-Path $Directory 'BUILD-MANIFEST.json'
+            if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+              throw "Manifest was not produced: $ManifestPath"
+            }
+
+            $ManifestBytes = [System.IO.File]::ReadAllBytes($ManifestPath)
+            if ($ManifestBytes.Length -ge 3 -and
+                $ManifestBytes[0] -eq 0xEF -and
+                $ManifestBytes[1] -eq 0xBB -and
+                $ManifestBytes[2] -eq 0xBF) {
+              throw "Manifest must be UTF-8 without BOM: $ManifestPath"
+            }
+
+            $Raw = Get-Content -LiteralPath $ManifestPath -Raw
+            $Manifest = $Raw | ConvertFrom-Json
+            $ActualKeys = @($Manifest.PSObject.Properties.Name | Sort-Object)
+            if (Compare-Object -ReferenceObject $AllowedKeys -DifferenceObject $ActualKeys) {
+              throw "Manifest schema contains missing or unexpected fields: $ManifestPath"
+            }
+            if ($Manifest.schemaVersion -ne 2 -or
+                $Manifest.applicationId -ne 'bypass.whitelist' -or
+                $Manifest.version -ne $Item.Version -or
+                [int64]$Manifest.versionCode -ne $Item.VersionCode -or
+                $Manifest.gitCommit -ne $Commit -or
+                $Manifest.gitTree -ne $Tree -or
+                $Manifest.debuggable -ne $false -or
+                $Manifest.androidBuildToolsVersion -ne $env:ANDROID_BUILD_TOOLS_VERSION) {
+              throw "Manifest identity/provenance/toolchain mismatch: $ManifestPath"
+            }
+            if ($Manifest.gitCommit -notmatch '^[0-9a-f]{40}$' -or
+                $Manifest.gitTree -notmatch '^[0-9a-f]{40}$' -or
+                $Manifest.apkSha256 -notmatch '^[0-9a-f]{64}$' -or
+                $Manifest.certificateSha256 -notmatch '^[0-9a-f]{64}$') {
+              throw "Manifest digest format mismatch: $ManifestPath"
+            }
+            $ParsedTime = [DateTimeOffset]::MinValue
+            if (-not [DateTimeOffset]::TryParse(
+                [string]$Manifest.builtAtUtc,
+                [ref]$ParsedTime)) {
+              throw "Manifest builtAtUtc is invalid: $ManifestPath"
+            }
+            if ($Raw -match '(?i)storePassword|keyPassword|keystorePassword|privateKey') {
+              throw "Manifest contains a forbidden secret field: $ManifestPath"
+            }
+
+            $ApkPath = Join-Path $Directory $Manifest.apk
+            if (-not (Test-Path -LiteralPath $ApkPath -PathType Leaf)) {
+              throw "Manifest APK was not produced: $ApkPath"
+            }
+            $ActualApkSha256 = (
+              Get-FileHash -LiteralPath $ApkPath -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($ActualApkSha256 -ne $Manifest.apkSha256) {
+              throw "Manifest APK SHA-256 mismatch: $ApkPath"
+            }
+
+            $CertificateOutput = Invoke-NativeCapture `
+              -Command $ApkSigner `
+              -Arguments @('verify', '--verbose', '--print-certs', $ApkPath)
+            $CertificateText = $CertificateOutput -join "`n"
+            $SignerCountMatch = [regex]::Match(
+              $CertificateText,
+              '(?m)^Number of signers:\s*(\d+)\s*$'
+            )
+            $SignerDigests = @(
+              [regex]::Matches(
+                $CertificateText,
+                '(?m)^(?:Signer #\d+|.*Signer):?\s+certificate SHA-256 digest:\s*(\S+)\s*$'
+              ) |
+                ForEach-Object {
+                  $_.Groups[1].Value.Replace(':', '').ToLowerInvariant()
+                } |
+                Sort-Object -Unique
+            )
+            if (-not $SignerCountMatch.Success -or
+                [int]$SignerCountMatch.Groups[1].Value -ne 1 -or
+                $SignerDigests.Count -ne 1) {
+              throw "Saved POC APK must have exactly one signer: $ApkPath"
+            }
+            if ($SignerDigests[0] -ne $ExpectedCertificateSha256 -or
+                $SignerDigests[0] -ne $Manifest.certificateSha256) {
+              throw "Saved POC APK signer mismatch: $ApkPath"
+            }
+
+            $BadgingOutput = Invoke-NativeCapture `
+              -Command $Aapt `
+              -Arguments @('dump', 'badging', $ApkPath)
+            $BadgingText = $BadgingOutput -join "`n"
+            if ($BadgingText.Contains('application-debuggable')) {
+              throw "Saved POC APK is debuggable: $ApkPath"
+            }
+            $PackageLine = $BadgingOutput | Select-Object -First 1
+            $PackageMatch = [regex]::Match(
+              $PackageLine,
+              "^package:\s+name='([^']+)'\s+versionCode='([^']+)'\s+versionName='([^']+)'(?:\s|$)"
+            )
+            if (-not $PackageMatch.Success -or
+                $PackageMatch.Groups[1].Value -ne $Manifest.applicationId -or
+                [int64]$PackageMatch.Groups[2].Value -ne [int64]$Manifest.versionCode -or
+                $PackageMatch.Groups[3].Value -ne $Manifest.version) {
+              throw "Saved POC APK identity does not match its manifest: $ApkPath"
+            }
+
+            $ObservedCertificates += $SignerDigests[0]
+          }
+
+          if (@($ObservedCertificates | Sort-Object -Unique).Count -ne 1) {
+            throw 'The two helper-produced APKs do not use one signing certificate'
+          }
+          if (Get-ChildItem `
+              '.\local-artifacts\poc-signing-smoke' `
+              -Filter '*.aab' `
+              -Recurse `
+              -File `
+              -ErrorAction SilentlyContinue) {
+            throw 'POC signing helper unexpectedly preserved an Android App Bundle'
+          }
+
+      - name: Upload sanitized helper diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-poc-signing-helper-diagnostics-${{ github.sha }}
+          retention-days: 3
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/poc-signing-helper.log
+
+      - name: Clean disposable signing material and local artifacts
+        if: always()
+        shell: powershell
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:WLB_POC_KEYSTORE_PATH)) {
+            Remove-Item `
+              $env:WLB_POC_KEYSTORE_PATH `
+              -Force `
+              -ErrorAction SilentlyContinue
+          }
+          Remove-Item `
+            (Join-Path $env:RUNNER_TEMP 'wlb-ci-poc.cer') `
+            -Force `
+            -ErrorAction SilentlyContinue
+          Remove-Item `
+            '.\local-artifacts\poc-signing-smoke' `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue

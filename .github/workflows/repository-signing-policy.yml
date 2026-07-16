@@ -1,0 +1,157 @@
+name: Repository signing-material policy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-signing-policy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tracked-signing-material:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Reject tracked private signing material
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked="$({
+            git ls-files | grep -Ei \
+              '(^|/)(keystore|signing|vkid|vk-poc)\.properties$|\.(jks|keystore|p12|pfx|pkcs12|ks|bcfks|pem|key)$'
+          } || true)"
+
+          if [[ -n "$tracked" ]]; then
+            echo "Private signing material must not be tracked anywhere in the repository:"
+            printf '%s\n' "$tracked"
+            exit 1
+          fi
+
+      - name: Validate public POC signing identity when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="android-app/poc-signing-identity.json"
+          if [[ ! -e "$identity" ]]; then
+            exit 0
+          fi
+          if [[ ! -f "$identity" ]]; then
+            echo "Public POC signing identity must be a regular file"
+            exit 1
+          fi
+
+          python3 - "$identity" <<'PY'
+          import datetime as dt
+          import json
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          try:
+              raw = path.read_text(encoding="utf-8")
+              value = json.loads(raw)
+          except Exception as exc:
+              raise SystemExit(f"Invalid public POC signing identity JSON: {exc}")
+
+          expected_keys = {
+              "schemaVersion",
+              "applicationId",
+              "certificateSha256",
+              "androidBuildToolsVersion",
+              "initializedAtUtc",
+          }
+          if set(value) != expected_keys:
+              raise SystemExit("Public POC signing identity has missing or unexpected fields")
+          if value["schemaVersion"] != 1:
+              raise SystemExit("Public POC signing identity schemaVersion must be 1")
+          if value["applicationId"] != "bypass.whitelist":
+              raise SystemExit("Public POC signing identity applicationId mismatch")
+          if value["androidBuildToolsVersion"] != "36.0.0":
+              raise SystemExit("Public POC signing identity build-tools version mismatch")
+          if not re.fullmatch(r"[0-9a-f]{64}", value["certificateSha256"]):
+              raise SystemExit("Public POC signing identity certificate must be lowercase SHA-256")
+          try:
+              timestamp = value["initializedAtUtc"].replace("Z", "+00:00")
+              parsed = dt.datetime.fromisoformat(timestamp)
+          except Exception as exc:
+              raise SystemExit(f"Public POC signing identity timestamp is invalid: {exc}")
+          if parsed.tzinfo is None:
+              raise SystemExit("Public POC signing identity timestamp must contain a timezone")
+          PY
+
+      - name: Verify generated build outputs stay ignored
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          generated_paths=(
+            relay/relay-darwin-amd64
+            relay/relay-darwin-arm64
+            relay/relay-windows-x64.exe
+            relay/relay-windows-ia32.exe
+            relay/relay-linux-x64
+            relay/relay-linux-ia32
+            headless/headless-vk-darwin-amd64
+            headless/headless-vk-windows-x64.exe
+            headless/headless-telemost-linux-x64
+            headless/headless-wbstream-windows-ia32.exe
+            headless/headless-dion-linux-ia32
+            headless/vk-bot/headless-vk-bot
+            headless/vk-bot/headless-vk-bot.exe
+            prebuilts/stage-windows-x64/example.exe
+          )
+
+          failed=0
+          for path in "${generated_paths[@]}"; do
+            if ! git check-ignore --no-index -q "$path"; then
+              echo "Generated build output is not ignored: $path"
+              failed=1
+            fi
+          done
+
+          exit "$failed"
+
+      - name: Verify legacy Android release export fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -x ./build-android.sh ]]; then
+            echo "build-android.sh must remain executable because make-release.sh invokes it directly"
+            exit 1
+          fi
+
+          rm -f prebuilts/whitelist-bypass.apk
+
+          set +e
+          output="$(./build-android.sh 2>&1)"
+          status=$?
+          set -e
+
+          if [[ $status -eq 0 ]]; then
+            echo "build-android.sh unexpectedly exported an Android release artifact"
+            exit 1
+          fi
+          if ! grep -Fq "Android production release signing is not configured." <<<"$output" ||
+              ! grep -Fq "Refusing to copy an unsigned app-release.apk" <<<"$output"; then
+            printf '%s\n' "$output"
+            echo "build-android.sh failed for an unexpected reason"
+            exit 1
+          fi
+          if [[ -e prebuilts/whitelist-bypass.apk ]]; then
+            echo "Legacy Android release path left a distributable-looking APK"
+            exit 1
+          fi

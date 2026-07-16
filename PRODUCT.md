@@ -8,9 +8,12 @@
 - Windows v1 host: existing Electron Creator.
 - Android client: existing `android-app` using `VpnService` and the headless Go/Pion path.
 - The unmodified Windows Creator and Android debug APK have been built and smoke-tested locally on Windows.
-- Android baseline CI now passes `test`, `lintDebug`, and `assembleDebug`; 69 non-blocking lint warnings remain classified as technical debt.
-- Creator CI now covers TypeScript build, static type-check, unit/regression tests, Electron renderer isolation and a Windows DPAPI protected-settings smoke on Node.js 22.
-- No production credentials, tokens, cookies, proxy passwords or signing keys belong in Git or public CI.
+- Android CI runs `test`, full `lint`, and `assembleDebug`; verification tools are pinned to Android build-tools `36.0.0`.
+- Creator CI covers TypeScript build, static type-check, unit/regression tests, Electron renderer isolation and a Windows DPAPI protected-settings smoke on Node.js 22.
+- The merged protected-settings build completed a local first-run Windows check: Settings reported Windows DPAPI and the synthetic protected-storage smoke passed.
+- Live tests run on a separate machine that does not receive the repository, source code, Node.js, Go, Gradle or signing keys; every live iteration must use prebuilt, versioned artifacts.
+- No production credentials, tokens, cookies, proxy passwords, persistent signing keys or live signing keys belong in Git or public CI.
+- Public CI may generate a disposable runner-local signing key solely for synthetic verification. That key must never be published, backed up, transferred or used on a physical POC device.
 
 ## Mandatory architecture gate
 
@@ -45,7 +48,7 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [x] Add HTTP status checks, bounded timeouts, request cancellation and bounded retry/backoff.
 - [x] Make Stop → Start unable to leave a stale Long Poll loop running.
 - [x] Propagate `messages.send` failures to callers.
-- [x] Separate functional process events (for example a join link) from redacted diagnostic logs.
+- [x] Separate functional process events from redacted diagnostic logs.
 - [x] Cover token, Long Poll key, Authorization headers, proxy credentials, platform links, room IDs and cookie material in log-redaction tests.
 - [x] Restrict the POC handler to `WLB-POC/1` PING/PONG; operational join/start/close commands remain disabled in POC mode.
 - [x] Validate Electron IPC senders and runtime arguments.
@@ -56,6 +59,41 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 - [x] Serialize bot result delivery with credential rotation, including the legacy webview result path.
 - [x] Validate legacy migration before stopping consumers and block bot start while plaintext remnants remain.
 - [x] Capture the WB device ID in the main process without printing it into the remote webview console.
+- [x] Complete the local Windows DPAPI first-run and synthetic protected-storage smoke after merging the protected-settings milestone.
+
+### POC artifact and signing gate — required before VK/network live tests on the separate machine
+
+- [x] Remove the repository-owned Android debug keystore from active debug/release signing.
+- [x] Keep normal debug signing machine-local and leave production release signing intentionally unconfigured.
+- [x] Add a distinct non-debuggable `poc` build type requiring an external PKCS12 key and `WLB_POC_BUILD_NUMBER` in `1..999`.
+- [x] Apply the per-build live version code only to the signed POC APK; normal debug/release outputs retain the stable base identity.
+- [x] Reject partial signing environments at the POC APK boundary without breaking ordinary `test`, full `lint` or `assembleDebug` tasks.
+- [x] Make supported POC APK and aggregate APK packaging fail closed when signing inputs or the keystore are unavailable.
+- [x] Explicitly reject POC Android App Bundle production; live POC delivery is APK-only.
+- [x] Verify public-CI signing with a disposable key, exact APK signer-certificate matching, Gradle-derived identity, non-debuggable output and both environment/properties Gradle paths.
+- [x] Pin Android verification to build-tools `36.0.0` and accept only the expected unsigned-release diagnostic after structural APK validation.
+- [x] Verify that the ordinary release APK remains structurally valid but unsigned.
+- [x] Make the legacy `build-android.sh`/`make-release.sh` Android path refuse to publish the unsigned release APK as `prebuilts/whitelist-bypass.apk`.
+- [x] Run a repository-wide tracked-signing-material workflow on every pull request regardless of changed paths.
+- [x] Keep all known relay/headless build-script outputs ignored and regression-test representative paths with `git check-ignore`.
+- [x] Require `Repository signing-material policy / tracked-signing-material` before merging to `main` through the configured GitHub branch rule.
+- [x] Expand `.gitignore` coverage for signing material, local configuration, build output and live bundles.
+- [x] Keep direct Gradle `keystore.properties` fallback isolated from the canonical operator wrapper.
+- [x] Reject every POC keystore whose canonical path resolves inside the repository, including ignored secret/artifact directories.
+- [x] Add `tools/invoke-poc-signing-smoke.ps1` to prompt passwords securely, avoid shell-history assignments, clear signing environment variables and zero BSTR buffers.
+- [x] Remove signing secrets from the helper process environment before quality commands and reintroduce them only around certificate export and `assemblePoc`.
+- [x] Require the low-level helper to receive an explicit expected public certificate SHA-256.
+- [x] Serialize helper executions with an exclusive repository-scoped lock and regression-test second-holder rejection.
+- [x] Make helper artifact-pair acceptance transactional and regression-test rollback after the first move, second move and final validation failure.
+- [x] Hard-pin accepted helper verification to Android build-tools `36.0.0` and record that version in manifest schema 2.
+- [x] Run the canonical helper on Windows without `-SkipQualityChecks` and independently re-inspect preserved APKs/manifests with pinned `aapt` and `apksigner`.
+- [x] Pin security-sensitive Android/Windows signing workflow actions to full commit SHAs.
+- [ ] Create and securely back up the persistent private POC keystore on the trusted build machine.
+- [ ] Run the first operator wrapper smoke with `-InitializeSigningIdentity`.
+- [ ] Review and commit the generated public `android-app/poc-signing-identity.json` in a follow-up PR.
+- [ ] Run the local signing helper with the committed identity and verify the resulting manifests, certificate fingerprint and APK SHA-256 values.
+- [ ] Verify local first install and subsequent in-place APK update on the physical POC device using the same POC key.
+- [ ] Implement the reproducible versioned live-test bundle for Creator, Android, manifest, checksums and POC launcher; reject reused/non-increasing numbers, existing release directories and certificate mismatch with `poc-signing-identity.json`.
 
 ### Phase 1 — official VK API PING/PONG POC
 
@@ -123,4 +161,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: Phase 0 documentation is established. Android baseline checks are green. VK transport hardening, typed headless process events, IPC sender/argument validation, remote-webview isolation, the POC-only `WLB-POC/1` handler and main-process OS-protected settings are implemented. Creator is single-instance; settings replacement cancels pending login starts and waits for active secret consumers to exit; tab close waits for process and temporary-cookie cleanup; bot result delivery is serialized with credential rotation; newer store formats are preserved; raw cookie export is removed; WB device IDs are captured without remote-console disclosure; and bot startup is blocked while legacy plaintext remains. PR #8 is eligible to leave Draft only after the latest head has green CI and its final manual race/security review is recorded; merge remains user-controlled. After merge, a local Windows upgrade/migration smoke is mandatory before real credentials are introduced. The official VK API POC has not started.**
+**Current status: the pre-POC Creator security gate is implemented, merged and locally confirmed on Windows with DPAPI. The official VK API POC has not started. The active milestone is the artifact/signing gate for a separate source-free test machine. The repository-owned debug key is retired; live POC delivery is restricted to a signed non-debuggable APK; repository-local signing keys are rejected; the operator wrapper obtains passwords without shell-history assignments; the low-level helper removes signing secrets before quality commands, requires an expected public certificate, uses an exclusive lock and transactionally preserves a two-APK pair with manifest schema 2 and pinned build-tools `36.0.0`. Public CI uses only disposable signing keys. A persistent key, committed public signing identity, physical update smoke and versioned live bundle remain mandatory before any VK/network live test on the separate machine. WLB2, pairing and session orchestration remain blocked pending the official VK API GO/NO-GO result.**

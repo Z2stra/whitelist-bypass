@@ -1,10 +1,46 @@
-*.iml
-.gradle
-/local.properties
+# Android Studio
 .idea/
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+*.iml
+
+# Gradle
+.gradle/
+**/build/
+.kotlin/
+
+# Machine-specific Android SDK path
 local.properties
+
+# Native builds
+.externalNativeBuild/
+.cxx/
+
+# IDE/runtime output
+captures/
+*.hprof
+
+# Manually exported packages
+*.apk
+*.aab
+*.apks
+app/release/
+
+# Signing configuration and private keys
+keystore.properties
+signing.properties
+vkid.local.properties
+vk-poc.local.properties
+
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pkcs12
+*.ks
+*.bcfks
+*.pem
+*.key
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
