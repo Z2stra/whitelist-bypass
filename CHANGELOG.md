@@ -12,6 +12,7 @@ All notable project changes made as part of the staged control-plane work are re
 - Added a draft platform-neutral `PlatformAdapter` contract.
 - Added a WLB2 envelope draft with an external random `keyId` to avoid circular per-device key selection.
 - Added the official VK API PING/PONG POC checklist and results template.
+- Documented the Android official VK API POC implementation, local configuration boundary, fixed protocol/API contract, token lifecycle, backup/log protections and still-pending live GO/NO-GO evidence.
 - Documented the source-free separate-machine live-test boundary and the Android POC signing/key lifecycle.
 - Distinguished the local signing/update smoke on the trusted build machine from later VK/network live tests on the separate source-free machine.
 - Replaced manual local POC manifest assembly with a checked PowerShell helper that records commit/tree provenance and derives manifest identity from the saved APK.
@@ -21,6 +22,13 @@ All notable project changes made as part of the staged control-plane work are re
 
 ### Android
 
+- Added an isolated official VK API PING/PONG POC surface using VK ID SDK `2.7.1`, with the normal release UI disabled, VK ID auth activities removed and a launcher-only `poc` artifact boundary.
+- Added VK ID authorization for the exact `messages` scope plus explicit refresh, logout and re-login states; missing scope or unusable refresh fails closed to a safe status instead of exposing SDK errors or token data.
+- Added official VK API `messages.send` and `messages.getHistory` POST requests to `https://api.vk.ru` with the access token in the form body and API version `5.131`, matching the already merged Creator POC contract.
+- Added exact `WLB-POC/1 PING <requestId> <nonce>` generation and strict `PONG` acceptance using a pre-send history baseline, expected community sender/peer, inbound direction and literal request ID/nonce correlation.
+- Added bounded history polling and cancellation-aware HTTPS disconnects so an exchange stops on first match, timeout, logout or explicit cancel.
+- Kept VK tokens in the SDK encrypted store, explicitly excluded VK authentication preferences from backup/device transfer and kept raw tokens, identifiers, message bodies and VK/SDK error details out of POC UI and diagnostics.
+- Added ignored local-property and environment configuration for VK application metadata and the positive community ID; no live values are committed. The required mobile client secret remains extractable from an APK and must be bound to the registered package/signature rather than treated as a confidential server secret.
 - Scoped the Quick Settings `VpnTileService` declaration to API 24 without raising the application `minSdk` from 23.
 - Updated active foreground-service notifications through `startForeground`, closing Android 13 notification-permission lint errors without introducing a user-facing notification permission request.
 - Added a reproducible Android CI gate for unit tests, full `lint`, debug APK assembly and report/artifact retention.
@@ -110,6 +118,8 @@ All notable project changes made as part of the staged control-plane work are re
 
 - VK transport hardening, typed headless process events, the isolated `WLB-POC/1` handler and the Electron IPC/remote-content trust boundary are implemented and tested.
 - Stored VK/proxy secrets are main-process owned and OS-protected; the merged build passed the local first-run Windows DPAPI and protected-storage smoke.
+- Android official VK API POC code is present for review, but local Android quality/assembly gates and every live VK/device/network result remain unconfirmed; this change does not establish GO.
+- Actual availability and grant of the VK `messages` scope to the registered Android application remains the live transport GO/NO-GO condition.
 - Live VK/network POC delivery is gated on an external persistent Android POC key, committed public certificate identity and a versioned prebuilt APK-only bundle for the separate test machine.
 - Public CI may create a disposable runner-local synthetic signing key, but persistent/live signing keys remain prohibited from Git and public CI configuration or artifacts.
 

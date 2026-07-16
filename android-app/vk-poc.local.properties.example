@@ -1,0 +1,17 @@
+# Local-only configuration for the isolated official VK API PING/PONG POC.
+#
+# Copy this file to vk-poc.local.properties. The real file is ignored by Git.
+# Never commit or paste its values into logs, screenshots, issues, or reports.
+
+# VK ID application registered for package bypass.whitelist.
+wlb.vk.clientId=
+wlb.vk.clientSecret=
+
+# Positive numeric ID of the dedicated private VK community. Android derives
+# the user-to-community dialog peer_id as the negative of this value.
+wlb.vk.groupId=
+
+# Environment-only alternative (selected atomically if any value is present):
+# WLB_VK_ID_CLIENT_ID
+# WLB_VK_ID_CLIENT_SECRET
+# WLB_VK_POC_GROUP_ID

@@ -33,6 +33,10 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".vkpoc.VkPocActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
         <service
             android:name=".tunnel.TunnelVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"

@@ -39,6 +39,50 @@ val signingProperties = Properties().apply {
     }
 }
 
+// VK ID credentials and the private test-community identity are local live-test
+// configuration. They are never committed. Environment variables are selected
+// as one indivisible source whenever any WLB_VK_* value is present; otherwise
+// Gradle reads the ignored android-app/vk-poc.local.properties file.
+val vkPocPropertiesFile = rootProject.file("vk-poc.local.properties")
+val vkPocProperties = Properties().apply {
+    if (vkPocPropertiesFile.isFile) {
+        vkPocPropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+val rawEnvironmentVkPocValues = linkedMapOf(
+    "clientId" to System.getenv("WLB_VK_ID_CLIENT_ID"),
+    "clientSecret" to System.getenv("WLB_VK_ID_CLIENT_SECRET"),
+    "groupId" to System.getenv("WLB_VK_POC_GROUP_ID"),
+)
+val anyEnvironmentVkPocValue = rawEnvironmentVkPocValues.values.any { it != null }
+val environmentVkPocValues = rawEnvironmentVkPocValues.mapValues { (_, value) ->
+    value?.takeIf { it.isNotBlank() }
+}
+val propertyVkPocValues = linkedMapOf(
+    "clientId" to vkPocProperties.getProperty("wlb.vk.clientId")?.takeIf { it.isNotBlank() },
+    "clientSecret" to vkPocProperties.getProperty("wlb.vk.clientSecret")?.takeIf { it.isNotBlank() },
+    "groupId" to vkPocProperties.getProperty("wlb.vk.groupId")?.takeIf { it.isNotBlank() },
+)
+val selectedVkPocValues =
+    if (anyEnvironmentVkPocValue) environmentVkPocValues else propertyVkPocValues
+val vkPocClientId = selectedVkPocValues.getValue("clientId")?.toIntOrNull()?.takeIf { it > 0 }
+val vkPocClientSecret = selectedVkPocValues.getValue("clientSecret")
+val vkPocGroupId = selectedVkPocValues.getValue("groupId")?.toLongOrNull()?.takeIf { it > 0L }
+val vkPocInputsComplete =
+    vkPocClientId != null && !vkPocClientSecret.isNullOrBlank() && vkPocGroupId != null
+val vkPocUsesPublicCiPlaceholder =
+    vkPocClientId == 1 ||
+        vkPocGroupId == 1L ||
+        vkPocClientSecret == "public-ci-placeholder-not-a-live-secret"
+val vkPocPublicPlaceholderAllowed =
+    System.getenv("GITHUB_ACTIONS").equals("true", ignoreCase = true) &&
+        System.getenv("WLB_VK_ALLOW_PUBLIC_CI_PLACEHOLDER").equals("true", ignoreCase = true)
+val vkPocConfigured = vkPocInputsComplete && !vkPocUsesPublicCiPlaceholder
+val vkPocRuntimeGroupId = vkPocGroupId?.takeIf { vkPocConfigured } ?: 0L
+val vkPocManifestClientId = vkPocClientId ?: 0
+val vkPocManifestClientSecret = vkPocClientSecret ?: "not-configured"
+
 fun nonEmptyEnvironmentValue(name: String): String? =
     System.getenv(name)?.takeIf { it.isNotEmpty() }
 
@@ -87,6 +131,18 @@ fun requirePocBuildNumber(): Int {
 
 fun validatePocPackagingInputs() {
     requirePocBuildNumber()
+
+    if (!vkPocInputsComplete) {
+        throw GradleException(
+            "Signed POC packaging requires complete local WLB_VK_* or " +
+                "vk-poc.local.properties configuration",
+        )
+    }
+    if (vkPocUsesPublicCiPlaceholder && !vkPocPublicPlaceholderAllowed) {
+        throw GradleException(
+            "Signed POC packaging rejects public CI VK placeholders outside the explicit GitHub Actions smoke gate",
+        )
+    }
 
     if (anyEnvironmentSigningValue && !allEnvironmentSigningValues) {
         throw GradleException(
@@ -147,6 +203,16 @@ android {
         versionName = baseVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Manual placeholders are an officially supported VK ID SDK setup path.
+        // Safe sentinels keep ordinary public builds reproducible without live
+        // credentials; the isolated screen fails closed until all local values exist.
+        manifestPlaceholders["VKIDClientID"] = vkPocManifestClientId.toString()
+        manifestPlaceholders["VKIDClientSecret"] = vkPocManifestClientSecret
+        manifestPlaceholders["VKIDRedirectHost"] = "vk.ru"
+        manifestPlaceholders["VKIDRedirectScheme"] = "vk$vkPocManifestClientId"
+        buildConfigField("boolean", "VK_POC_CONFIGURED", vkPocConfigured.toString())
+        buildConfigField("long", "VK_POC_GROUP_ID", "${vkPocRuntimeGroupId}L")
     }
 
     signingConfigs {
@@ -162,15 +228,24 @@ android {
     buildTypes {
         getByName("debug") {
             // Use the standard machine-local Android debug key. No signing key is stored in Git.
+            buildConfigField("boolean", "VK_POC_UI_ENABLED", "true")
         }
         getByName("release") {
             isMinifyEnabled = false
             // Production signing is intentionally not configured in this project yet.
             signingConfig = null
+            // Ordinary release artifacts never inherit machine-local POC identity.
+            manifestPlaceholders["VKIDClientID"] = "0"
+            manifestPlaceholders["VKIDClientSecret"] = "not-configured"
+            manifestPlaceholders["VKIDRedirectHost"] = "vk.ru"
+            manifestPlaceholders["VKIDRedirectScheme"] = "vk0"
+            buildConfigField("boolean", "VK_POC_CONFIGURED", "false")
+            buildConfigField("long", "VK_POC_GROUP_ID", "0L")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            buildConfigField("boolean", "VK_POC_UI_ENABLED", "false")
         }
         create("poc") {
             initWith(getByName("release"))
@@ -179,7 +254,17 @@ android {
                 "-poc.${if (configuredPocBuildNumber > 0) configuredPocBuildNumber else "local"}"
             matchingFallbacks += listOf("release")
             signingConfig = signingConfigs.getByName("poc")
+            manifestPlaceholders["VKIDClientID"] = vkPocManifestClientId.toString()
+            manifestPlaceholders["VKIDClientSecret"] = vkPocManifestClientSecret
+            manifestPlaceholders["VKIDRedirectHost"] = "vk.ru"
+            manifestPlaceholders["VKIDRedirectScheme"] = "vk$vkPocManifestClientId"
+            buildConfigField("boolean", "VK_POC_CONFIGURED", vkPocConfigured.toString())
+            buildConfigField("long", "VK_POC_GROUP_ID", "${vkPocRuntimeGroupId}L")
+            buildConfigField("boolean", "VK_POC_UI_ENABLED", "true")
         }
+    }
+    buildFeatures {
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -258,10 +343,17 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
     implementation(libs.androidx.activity)
+    implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.viewpager2)
     implementation(libs.androidx.recyclerview)
+    implementation(libs.vkid)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.gson)
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }

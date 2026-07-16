@@ -98,10 +98,13 @@ The official VK API PING/PONG proof of concept is a **GO/NO-GO gate**. Full pair
 ### Phase 1 — official VK API PING/PONG POC
 
 - [ ] Register/configure the VK ID Android application without committing secrets.
-- [ ] Implement an isolated debug/POC Android login flow.
-- [ ] Implement Android `messages.send` PING.
+- [x] Implement an isolated debug/POC Android VK ID login flow requesting the `messages` scope.
+- [x] Implement Android `messages.send` PING through the official API with the access token in the POST form body.
 - [x] Implement Creator POC-only PING parser and PONG sender.
-- [ ] Implement Android history polling and strict response correlation.
+- [x] Implement Android history-baseline capture, bounded polling/cancellation and strict PONG correlation.
+- [x] Implement explicit Android refresh, logout and re-login states without exposing token values to the UI.
+- [x] Exclude VK authentication storage from Android backup/device transfer and keep raw tokens, identifiers, message bodies and API errors out of POC diagnostics.
+- [ ] Pass the local Android unit-test, full-lint and debug/POC assembly gates for the implementation branch.
 - [ ] Exercise token refresh, logout, restart and re-login.
 - [ ] Run repeated exchanges on the target restricted mobile network.
 - [ ] Write the evidence and a documented GO/NO-GO decision.
@@ -161,4 +164,4 @@ A code milestone is complete only when:
 
 ## Current decision
 
-**Current status: the pre-POC Creator security gate is implemented, merged and locally confirmed on Windows with DPAPI. The official VK API POC has not started. The active milestone is the artifact/signing gate for a separate source-free test machine. The repository-owned debug key is retired; live POC delivery is restricted to a signed non-debuggable APK; repository-local signing keys are rejected; the operator wrapper obtains passwords without shell-history assignments; the low-level helper removes signing secrets before quality commands, requires an expected public certificate, uses an exclusive lock and transactionally preserves a two-APK pair with manifest schema 2 and pinned build-tools `36.0.0`. Public CI uses only disposable signing keys. A persistent key, committed public signing identity, physical update smoke and versioned live bundle remain mandatory before any VK/network live test on the separate machine. WLB2, pairing and session orchestration remain blocked pending the official VK API GO/NO-GO result.**
+**Current status: the pre-POC Creator security gate is implemented, merged and locally confirmed on Windows with DPAPI. The Android side of the official VK API PING/PONG POC is implemented in the current branch for code review: an isolated VK ID SDK `2.7.1` flow requests `messages`, uses the official `messages.send`/`messages.getHistory` API at `https://api.vk.ru` with `v=5.131`, and applies a history baseline plus strict sender/peer/direction/body correlation. Token storage remains SDK-owned and encrypted, backup is explicitly excluded, and POC diagnostics do not contain raw tokens, identifiers, message bodies or API errors. This is not a live result or GO: local Android test/lint/assembly gates, VK application registration, actual `messages` grant, signed-device lifecycle tests and target-network exchanges remain pending. The `messages` scope being available and actually granted to the registered Android application is a live GO/NO-GO condition. The mobile client secret is necessarily extractable from the APK and must be treated as a public-app credential bound to the registered package/signature, never as a repository or logging secret. The persistent signing key, committed public signing identity, physical update smoke and versioned source-free live bundle also remain mandatory before any VK/network live test. WLB2, pairing and session orchestration remain blocked pending an evidence-backed official VK API GO/NO-GO decision.**

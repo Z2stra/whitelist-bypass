@@ -16,9 +16,11 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven(url = "https://artifactory-external.vkpartner.ru/artifactory/vkid-sdk-android/")
+        maven(url = "https://artifactory-external.vkpartner.ru/artifactory/maven/")
+        maven(url = "https://artifactory-external.vkpartner.ru/artifactory/vk-id-captcha/android/")
     }
 }
 
 rootProject.name = "WhitelistBypass"
 include(":app")
- 

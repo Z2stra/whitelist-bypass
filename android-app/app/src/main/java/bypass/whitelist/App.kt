@@ -4,12 +4,19 @@ import android.app.Application
 import androidx.appcompat.app.AppCompatDelegate
 import bypass.whitelist.util.Prefs
 import bypass.whitelist.util.ThemeMode
+import com.vk.id.VKID
 
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
         Prefs.init(this)
         applyTheme(Prefs.themeMode)
+        if (BuildConfig.VK_POC_CONFIGURED) {
+            // The POC never enables SDK diagnostics: auth/token material must not
+            // enter Logcat, the app's file log, or a user-visible error.
+            VKID.logsEnabled = false
+            VKID.init(this)
+        }
     }
 
     companion object {
