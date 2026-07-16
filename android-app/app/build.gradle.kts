@@ -1,3 +1,4 @@
+import java.io.File
 import java.util.Properties
 
 plugins {
@@ -20,6 +21,16 @@ val configuredPocBuildNumber = pocBuildNumber?.takeIf { it in 1..999 } ?: 0
 val configuredPocVersionCode = baseVersionCode + configuredPocBuildNumber
 val pocAabUnsupportedMessage =
     "POC AAB is not supported; build the signed POC APK with :app:assemblePoc"
+
+val repositoryRoot = rootProject.projectDir.parentFile.canonicalFile
+val windowsHost = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+
+fun pathIsInsideDirectory(candidate: File, directory: File): Boolean {
+    val candidatePath = candidate.canonicalFile.path.trimEnd(File.separatorChar)
+    val directoryPath = directory.canonicalFile.path.trimEnd(File.separatorChar)
+    return candidatePath.equals(directoryPath, ignoreCase = windowsHost) ||
+        candidatePath.startsWith(directoryPath + File.separator, ignoreCase = windowsHost)
+}
 
 val signingPropertiesFile = rootProject.file("keystore.properties")
 val signingProperties = Properties().apply {
@@ -98,6 +109,11 @@ fun validatePocPackagingInputs() {
     }
     if (pocStoreFile?.isFile != true) {
         throw GradleException("POC signing keystore file does not exist")
+    }
+    if (pathIsInsideDirectory(pocStoreFile, repositoryRoot)) {
+        throw GradleException(
+            "POC signing keystore must be outside the repository, including ignored directories",
+        )
     }
 }
 
