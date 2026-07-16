@@ -15,7 +15,8 @@ All notable project changes made as part of the staged control-plane work are re
 - Documented the source-free separate-machine live-test boundary and the Android POC signing/key lifecycle.
 - Distinguished the local signing/update smoke on the trusted build machine from later VK/network live tests on the separate source-free machine.
 - Replaced manual local POC manifest assembly with a checked PowerShell helper that records commit/tree provenance and derives manifest identity from the saved APK.
-- Clarified that the canonical helper requires the complete signing environment, while ignored `keystore.properties` remains a direct-Gradle fallback only.
+- Added an interactive operator wrapper that prompts signing passwords securely instead of documenting literal shell assignments.
+- Documented public certificate pinning through `android-app/poc-signing-identity.json` and the required follow-up PR after first-key initialization.
 - Corrected the source-build README so it no longer describes the intentionally disabled unsigned Android release path as a usable release artifact.
 
 ### Android
@@ -31,19 +32,23 @@ All notable project changes made as part of the staged control-plane work are re
 - Added local environment/property inputs for direct Gradle POC signing without committing key paths, aliases or passwords.
 - Rejected partial signing environments only at the POC APK boundary, preventing source mixing without breaking ordinary non-POC tasks, including full Android lint.
 - Made signed POC APK and aggregate APK packaging fail closed when build identity or signing inputs are absent.
-- Added public-CI checks that verify environment and properties through two separately numbered signed APKs, compare each APK signer certificate with a disposable generated CI key, validate Gradle-derived identities, reject debuggable POC output and confirm POC AAB production remains disabled.
+- Added public-CI checks that verify environment and properties through separately numbered signed APKs, compare each APK signer certificate with a disposable generated CI key, validate Gradle-derived identities, reject debuggable POC output and confirm POC AAB production remains disabled.
 - Pinned Android APK inspection and signature verification to build-tools `36.0.0` instead of selecting the newest preinstalled runner tool.
+- Recorded the pinned build-tools version in preserved manifest schema 2 and removed the accepted-artifact tool-version override.
 - Strengthened the unsigned-release regression to require a structurally valid APK, the pinned expected unsigned diagnostic and no reported signer certificate.
 - Changed `build-android.sh` to fail closed instead of copying the unsigned `app-release.apk` into the distributable-looking `prebuilts/whitelist-bypass.apk`; `make-release.sh` therefore stops until a separate production Android signing design exists.
 - Added a repository-wide regression that verifies the legacy Android release-export script returns the expected signing-policy error and leaves no APK.
 - Added a repository-wide pull-request workflow that rejects tracked signing containers and private signing property files regardless of changed paths, and configured its `tracked-signing-material` job as a required `main` status check.
 - Added a repository-wide regression that verifies representative relay, cross-platform headless and VK-bot build outputs remain ignored even when a build script exits before cleanup.
 - Clarified that Gradle enforces only the build-number range; monotonically increasing live numbers and immutable release-directory names must be enforced by the future versioned bundle builder.
-- Made `tools/preserve-poc-signing-smoke.ps1` environment-only, eliminating a second parser for Java `.properties` escaping rules.
+- Made the low-level signing helper environment-only and added an interactive wrapper that clears `WLB_POC_*` variables and zeroes password BSTR buffers.
+- Removed signing secrets from helper child environments during `test`, full `lint` and `assembleDebug`; secrets are reintroduced only around certificate export and POC packaging.
+- Rejected keystores whose canonical paths resolve inside the repository, including ignored `secrets` and `local-artifacts` directories, in both Gradle and the helper.
+- Required every accepted helper run to receive an expected public certificate SHA-256 and added first-run public identity initialization.
+- Added a repository-scoped exclusive helper lock and a safety self-test for lock contention, repository-local key rejection, secret-environment cleanup and transactional rollback.
 - Made local artifact-pair acceptance transactional: any failure before PASS removes every already moved final version directory.
-- Added an acceptance rollback self-test that injects failures after the first move, after the second move and during final validation.
-- Added a Windows CI path that runs the canonical helper without `-SkipQualityChecks` and independently rechecks preserved APK signer, package/version, non-debuggable state, hashes, manifest schema, UTF-8 no-BOM and commit/tree provenance.
-- Added Android CI syntax parsing for the PowerShell signing-smoke helper.
+- Added a Windows CI path that runs the canonical helper without `-SkipQualityChecks` and independently rechecks preserved APK signer, package/version, non-debuggable state, hashes, manifest schema, toolchain version and commit/tree provenance.
+- Pinned security-sensitive Android and Windows signing workflow actions to full commit SHAs.
 - Expanded project, Android and Creator ignore rules for local secrets, signing files, additional PKCS/key containers, all known build-script output families, runtime profiles and versioned live bundles.
 
 ### Creator VK transport security
@@ -105,7 +110,7 @@ All notable project changes made as part of the staged control-plane work are re
 
 - VK transport hardening, typed headless process events, the isolated `WLB-POC/1` handler and the Electron IPC/remote-content trust boundary are implemented and tested.
 - Stored VK/proxy secrets are main-process owned and OS-protected; the merged build passed the local first-run Windows DPAPI and protected-storage smoke.
-- Live VK/network POC delivery is gated on an external persistent Android POC key and a versioned prebuilt APK-only bundle for the separate test machine.
+- Live VK/network POC delivery is gated on an external persistent Android POC key, committed public certificate identity and a versioned prebuilt APK-only bundle for the separate test machine.
 - Public CI may create a disposable runner-local synthetic signing key, but persistent/live signing keys remain prohibited from Git and public CI configuration or artifacts.
 
 ### Known baseline debt
