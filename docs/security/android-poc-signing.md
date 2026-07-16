@@ -21,11 +21,9 @@ Signing responsibility is split as follows:
 - POC Android App Bundle production is unsupported;
 - the persistent key and passwords never enter Git, public CI, release bundles or the separate test machine;
 - public CI may generate only a disposable runner-local synthetic key;
-- all accepted POC APK updates must use the same public certificate identity.
+- all accepted POC APK updates must use the same pinned public certificate identity.
 
 ## 2. APK-only delivery
-
-Supported and rejected tasks:
 
 ```text
 :app:assemblePoc   supported
@@ -76,9 +74,9 @@ Repository signing-material policy / tracked-signing-material
 If that rule is removed or the job is renamed, the corresponding gate in
 `PRODUCT.md` must be reopened.
 
-## 4. Signing inputs
+## 4. Signing entrypoints
 
-### 4.1 Canonical operator entrypoint
+### 4.1 Canonical operator wrapper
 
 Use:
 
@@ -86,24 +84,42 @@ Use:
 tools/invoke-poc-signing-smoke.ps1
 ```
 
-The wrapper:
+The wrapper deliberately completes the entire non-secret Android quality gate
+**before** requesting either signing password:
 
-- prompts for both passwords with `Read-Host -AsSecureString`;
-- never asks the operator to type a password assignment into the shell;
-- converts SecureString values only for the duration of the child process;
-- clears all four `WLB_POC_*` signing variables in `finally`;
-- calls `ZeroFreeBSTR` for both password buffers;
-- initializes or verifies the public certificate identity;
-- invokes the low-level helper without putting passwords in command arguments.
+```text
+gradlew test
+gradlew lint
+gradlew assembleDebug
+```
 
-The low-level helper is:
+It records the clean Git commit/tree before those commands and requires the
+same clean provenance immediately before signed POC packaging and in both
+accepted manifests.
+
+Only after the quality gate succeeds does the wrapper:
+
+- prompt with `Read-Host -AsSecureString`;
+- convert the secure strings for the child signing process;
+- pass no password in command-line arguments;
+- initialize or verify the public certificate identity;
+- call the low-level helper with `-SkipQualityChecks` for signed packaging;
+- clear all four `WLB_POC_*` signing variables in `finally`;
+- call `ZeroFreeBSTR` for both password buffers;
+- remove both accepted artifact directories if wrapper-level final validation fails.
+
+This avoids literal password assignments in PSReadLine history and avoids
+holding or exporting signing passwords during the quality phase.
+
+### 4.2 Low-level helper
+
+The internal CI/automation entrypoint is:
 
 ```text
 tools/preserve-poc-signing-smoke.ps1
 ```
 
-It is an internal CI/automation entrypoint. It requires the complete process
-environment:
+It requires the complete process environment:
 
 ```text
 WLB_POC_KEYSTORE_PATH
@@ -112,12 +128,22 @@ WLB_POC_KEY_ALIAS
 WLB_POC_KEY_PASSWORD
 ```
 
-Immediately after capturing the values, it removes them from its own process
-environment. Android quality commands therefore do not pass signing passwords
-to Gradle test/lint/debug subprocesses. The values are reintroduced only around
-`keytool` certificate export and `assemblePoc`, then cleared again.
+It captures that environment once, immediately clears it from its own process,
+and reintroduces it only around public-certificate export and `assemblePoc`.
+When invoked directly without `-SkipQualityChecks`, its `test`, `lint` and
+debug-build children therefore receive no signing secrets.
 
-### 4.2 Direct Gradle fallback
+Every accepted run must also provide:
+
+```text
+-ExpectedCertificateSha256 <64 lowercase/uppercase hex characters>
+```
+
+The GitHub-Actions-only `-AllowSyntheticCiCertificate` switch exists so public
+CI can verify the mechanism with a disposable key even after the real public
+identity is committed. It is rejected outside GitHub Actions.
+
+### 4.3 Direct Gradle fallback
 
 Direct Gradle POC builds may use ignored:
 
@@ -134,9 +160,9 @@ android-app/keystore.properties.example
 Environment and properties are indivisible alternatives at the Gradle layer. A
 partial environment is never completed from the properties file.
 
-Direct properties-backed builds are useful for development and CI verification,
-but they are not accepted as canonical live artifacts without the operator
-wrapper, public identity check and preserved manifests.
+Properties-backed builds are useful for development and CI verification, but
+they are not accepted as canonical live artifacts without the operator wrapper,
+public identity check and preserved manifests.
 
 ## 5. Keystore placement
 
@@ -155,8 +181,8 @@ keytool.exe -genkeypair `
   -validity 3650
 ```
 
-Both Gradle and the low-level helper canonicalize the keystore path and reject
-it when it resolves inside the repository. This includes ignored directories:
+Both Gradle and the PowerShell entrypoints canonicalize the keystore path and
+reject it when it resolves inside the repository, including ignored paths:
 
 ```text
 repository\secrets
@@ -193,13 +219,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -InitializeSigningIdentity
 ```
 
-After the signing smoke succeeds, the wrapper creates:
+After the complete quality/signing smoke succeeds, the wrapper creates:
 
 ```text
 android-app/poc-signing-identity.json
 ```
 
-Example schema:
+Schema:
 
 ```json
 {
@@ -224,16 +250,10 @@ must verify the same certificate against this file.
 Gradle enforces only that `WLB_POC_BUILD_NUMBER` is an integer in `1..999`. It
 does not remember previously accepted builds.
 
-Base identity:
-
 ```text
 debug/release versionName = 0.3.7
 debug/release versionCode = 3007000
-```
 
-POC examples:
-
-```text
 poc.1 versionName = 0.3.7-poc.1
 poc.1 versionCode = 3007001
 
@@ -251,8 +271,8 @@ The future versioned bundle builder must reject:
 
 ## 8. Canonical signing/update smoke
 
-After the identity file has been initialized and committed, omit
-`-InitializeSigningIdentity`:
+After the public identity has been initialized and committed, omit
+`-InitializeSigningIdentity` and choose later monotonically increasing numbers:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -263,35 +283,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -SecondBuildNumber 4
 ```
 
-The wrapper prompts for passwords. Do not paste passwords into chat, screenshots
-or saved transcripts.
+The operator wrapper and low-level helper jointly enforce:
 
-The low-level helper:
+1. quality before password prompts;
+2. clean commit/tree continuity from quality through final manifests;
+3. an exclusive repository-scoped low-level helper lock;
+4. immediate rejection of a concurrent second helper;
+5. external-keystore path validation;
+6. exact certificate match with the expected/public identity;
+7. two numbered signed POC APKs;
+8. inspection with pinned `aapt` and `apksigner`;
+9. transactional pair acceptance only after all checks pass.
 
-1. acquires an exclusive repository-scoped file lock;
-2. rejects a concurrent second invocation;
-3. requires a clean tracked and non-ignored-untracked tree;
-4. records full Git commit and tree SHA;
-5. runs `gradlew test`, full `gradlew lint` and `gradlew assembleDebug` without signing secrets in child environments;
-6. validates the external keystore path;
-7. compares the keystore certificate with the pinned public identity;
-8. builds two numbered signed POC APKs;
-9. inspects the copied APKs with pinned `aapt` and `apksigner`;
-10. transactionally accepts the pair only after all checks pass.
-
-A safety self-test injects failures:
-
-- after the first final-directory move;
-- after the second final-directory move;
-- during final source-tree validation.
-
-Every failure removes all already moved final directories. The same self-test
-holds the exclusive lock twice to confirm the second holder is rejected and
-checks that repository-local keystore paths are denied.
+Safety regressions inject failures after the first move, after the second move
+and during final validation. Every failure removes all already moved final
+directories. The same self-test verifies lock contention, repository-local key
+rejection and signing-environment cleanup.
 
 ## 9. Preserved artifact schema
-
-Output:
 
 ```text
 local-artifacts/
@@ -354,9 +363,8 @@ After installing the persistent-key POC APK on the dedicated device:
 
 ## 11. Separate-machine live-test gate
 
-The local signing/update smoke may be completed before the versioned bundle
-builder exists. Until the source-free bundle is implemented and verified, the
-following remain prohibited:
+Until the source-free bundle is implemented and verified, the following remain
+prohibited:
 
 - copying an ad-hoc APK from `app/build` to the separate test machine;
 - entering live VK credentials without immutable manifest/checksums;
@@ -378,9 +386,6 @@ checksums
 
 Public CI never uses the real persistent key.
 
-The repository policy workflow rejects tracked signing material and verifies
-legacy release/export guards.
-
 The Android workflow:
 
 - uses actions pinned to full commit SHAs;
@@ -392,9 +397,9 @@ The Android workflow:
 
 The Windows workflow:
 
-- uses actions pinned to full commit SHAs;
-- runs the helper safety self-tests;
-- runs the canonical low-level helper without `-SkipQualityChecks`;
+- parses both PowerShell entrypoints;
+- runs the low-level safety self-tests;
+- runs the low-level helper including the full non-secret quality gate;
 - supplies an explicit expected public certificate digest;
 - uses the GitHub-Actions-only synthetic-certificate switch so a future committed
   real identity never requires the persistent private key in public CI;
@@ -402,3 +407,7 @@ The Windows workflow:
   manifest schema, toolchain version, hashes and Git provenance;
 - publishes neither APK nor keystore;
 - removes disposable key and local artifacts in an always-run cleanup step.
+
+The wrapper-specific pre-prompt quality function is additionally exposed through
+`-RunQualityGateOnly` for Windows regression use without requiring a key or
+prompting for secrets.
