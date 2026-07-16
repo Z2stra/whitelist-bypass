@@ -104,22 +104,26 @@ The full step-by-step (Russian) covers each platform in detail: see [docs/SETUP.
 
 Production Android release signing is intentionally not configured in the current source tree. `build-android.sh` and therefore `make-release.sh` refuse to copy the unsigned `app-release.apk` into `prebuilts/whitelist-bypass.apk`.
 
-Use one of the explicit paths instead:
+For a local development APK:
 
 ```sh
-# Local development APK (machine-local debug key)
 cd android-app
 ./gradlew assembleDebug
 ```
 
-For the persistent-key POC signing/update smoke on the trusted Windows build machine, use:
+For the persistent-key POC signing/update smoke on the trusted Windows build machine, use the interactive operator wrapper. It prompts for passwords without putting literal password assignments in shell history:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\tools\preserve-poc-signing-smoke.ps1
+  -File .\tools\invoke-poc-signing-smoke.ps1 `
+  -KeystorePath D:\wlb-secrets\wlb-poc.keystore `
+  -KeyAlias wlb-poc `
+  -InitializeSigningIdentity
 ```
 
-Do not distribute the unsigned `release` variant. POC delivery is signed APK-only; POC AAB production is unsupported.
+`-InitializeSigningIdentity` is only for the first persistent-key run. Review and commit the generated public `android-app/poc-signing-identity.json` before accepting a live bundle. Subsequent runs omit that switch. See [Android POC signing and APK delivery boundary](docs/security/android-poc-signing.md).
+
+Do not invoke the low-level environment-only helper manually unless following the security document. Do not distribute the unsigned `release` variant. POC delivery is signed APK-only; POC AAB production is unsupported.
 
 ### Build scripts
 
