@@ -117,10 +117,14 @@ class VkPocSecurityStaticTest {
         require(it.exists()) { "Missing repository fixture: $path" }
     }
 
-    private fun repositoryRoot(): File =
-        generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+    private fun repositoryRoot(): File {
+        val userDirectory = requireNotNull(System.getProperty("user.dir")) {
+            "Missing user.dir system property"
+        }
+        return generateSequence(File(userDirectory).canonicalFile) { it.parentFile }
             .firstOrNull { File(it, "android-app/app").isDirectory && File(it, "PRODUCT.md").isFile }
             ?: error("Could not locate repository root")
+    }
 
     companion object {
         val SESSION_PREFERENCE_FILES = listOf(
