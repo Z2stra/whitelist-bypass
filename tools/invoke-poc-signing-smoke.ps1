@@ -13,7 +13,11 @@ param(
     # First persistent-key run only. Creates a public identity file after the
     # signing smoke succeeds. That file must be reviewed and committed before
     # a source-free live bundle is accepted.
-    [switch]$InitializeSigningIdentity
+    [switch]$InitializeSigningIdentity,
+
+    # CI regression path for the pre-prompt phase. It never reads a signing key
+    # or prompts for passwords.
+    [switch]$RunQualityGateOnly
 )
 
 Set-StrictMode -Version Latest
@@ -23,6 +27,7 @@ $PinnedBuildToolsVersion = '36.0.0'
 $ScriptRoot = Split-Path -Parent $PSCommandPath
 $RepoRoot = (Resolve-Path (Join-Path $ScriptRoot '..')).Path
 $AndroidRoot = Join-Path $RepoRoot 'android-app'
+$Gradle = Join-Path $AndroidRoot 'gradlew.bat'
 $LowLevelHelper = Join-Path $ScriptRoot 'preserve-poc-signing-smoke.ps1'
 $IdentityPath = Join-Path $AndroidRoot 'poc-signing-identity.json'
 $ArtifactsRoot = Join-Path $RepoRoot 'local-artifacts\poc-signing-smoke'
@@ -43,6 +48,33 @@ function Get-RequiredCommandPath {
         }
     }
     throw ('Required command was not found: {0}' -f ($Names -join ', '))
+}
+
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [switch]$CaptureOutput
+    )
+
+    $PreviousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $Output = @(& $Command @Arguments 2>&1)
+        $ExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $PreviousPreference
+    }
+
+    if ($ExitCode -ne 0) {
+        $Output | ForEach-Object { Write-Host $_ }
+        throw ('External command failed with exit code {0}: {1}' -f $ExitCode, $Command)
+    }
+    if ($CaptureOutput) {
+        return @($Output | ForEach-Object { $_.ToString() })
+    }
+    $Output | ForEach-Object { Write-Host $_ }
 }
 
 function Get-NormalizedPath {
@@ -107,6 +139,142 @@ function Write-Utf8NoBomJson {
     )
 }
 
+function Get-GitValue {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    return (
+        Invoke-NativeCommand `
+            -Command $script:Git `
+            -Arguments (@('-C', $RepoRoot) + $Arguments) `
+            -CaptureOutput |
+            Select-Object -First 1
+    ).Trim()
+}
+
+function Get-SourceStatus {
+    return @(
+        Invoke-NativeCommand `
+            -Command $script:Git `
+            -Arguments @('-C', $RepoRoot, 'status', '--porcelain=v1', '--untracked-files=all') `
+            -CaptureOutput
+    )
+}
+
+function Assert-Provenance {
+    param(
+        [Parameter(Mandatory = $true)][string]$Commit,
+        [Parameter(Mandatory = $true)][string]$Tree,
+        [Parameter(Mandatory = $true)][string]$Stage
+    )
+
+    if ((Get-GitValue @('rev-parse', 'HEAD')) -ne $Commit -or
+        (Get-GitValue @('rev-parse', 'HEAD^{tree}')) -ne $Tree) {
+        throw ("Git provenance changed during operator signing smoke at stage '{0}'." -f $Stage)
+    }
+    $Status = @(Get-SourceStatus)
+    if ($Status.Count -ne 0) {
+        throw ("Source tree is not clean at stage '{0}':`n{1}" -f `
+            $Stage,
+            ($Status -join [Environment]::NewLine))
+    }
+}
+
+function Invoke-AndroidQualityGate {
+    Clear-SigningEnvironment
+    $InitialStatus = @(Get-SourceStatus)
+    if ($InitialStatus.Count -ne 0) {
+        throw ("Tracked/non-ignored-untracked source tree must be clean before Android quality checks:`n{0}" -f `
+            ($InitialStatus -join [Environment]::NewLine))
+    }
+
+    $Commit = Get-GitValue @('rev-parse', 'HEAD')
+    $Tree = Get-GitValue @('rev-parse', 'HEAD^{tree}')
+
+    Push-Location $AndroidRoot
+    try {
+        Invoke-NativeCommand -Command $Gradle -Arguments @('--no-daemon', 'test')
+        Invoke-NativeCommand -Command $Gradle -Arguments @('--no-daemon', 'lint')
+        Invoke-NativeCommand -Command $Gradle -Arguments @('--no-daemon', 'assembleDebug')
+    }
+    finally {
+        Pop-Location
+        Clear-SigningEnvironment
+    }
+
+    Assert-Provenance -Commit $Commit -Tree $Tree -Stage 'after Android quality gate'
+    return [pscustomobject]@{
+        Commit = $Commit
+        Tree = $Tree
+    }
+}
+
+function Get-AcceptedDirectories {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$HelperOutput,
+        [Parameter(Mandatory = $true)][int]$FirstNumber,
+        [Parameter(Mandatory = $true)][int]$SecondNumber
+    )
+
+    $Directories = @()
+    foreach ($Line in $HelperOutput) {
+        $Match = [regex]::Match($Line.ToString(), '^(?:First|Second):\s+(.+)$')
+        if ($Match.Success) {
+            $Directories += $Match.Groups[1].Value.Trim()
+        }
+    }
+    if ($Directories.Count -ne 2 -and
+        (Test-Path -LiteralPath $ArtifactsRoot -PathType Container)) {
+        $Directories = @(
+            Get-ChildItem -LiteralPath $ArtifactsRoot -Directory -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.Name -match ('-poc\.({0}|{1})$' -f $FirstNumber, $SecondNumber)
+                } |
+                Select-Object -ExpandProperty FullName
+        )
+    }
+    return @($Directories)
+}
+
+function Assert-AcceptedProvenance {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Directories,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedTree,
+        [Parameter(Mandatory = $true)][string]$ExpectedCertificateSha256
+    )
+
+    if ($Directories.Count -ne 2) {
+        throw 'Could not identify both accepted artifact directories.'
+    }
+    foreach ($Directory in $Directories) {
+        $ManifestPath = Join-Path $Directory 'BUILD-MANIFEST.json'
+        if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+            throw ('Accepted artifact manifest is missing: {0}' -f $ManifestPath)
+        }
+        $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+        if ($Manifest.schemaVersion -ne 2 -or
+            $Manifest.gitCommit -ne $ExpectedCommit -or
+            $Manifest.gitTree -ne $ExpectedTree -or
+            $Manifest.androidBuildToolsVersion -ne $PinnedBuildToolsVersion -or
+            ([string]$Manifest.certificateSha256).ToLowerInvariant() -ne $ExpectedCertificateSha256) {
+            throw ('Accepted artifact provenance does not match the pre-prompt quality gate: {0}' -f $ManifestPath)
+        }
+    }
+}
+
+$script:Git = Get-RequiredCommandPath @('git.exe', 'git')
+if (-not (Test-Path -LiteralPath $Gradle -PathType Leaf)) {
+    throw ('Gradle wrapper was not found: {0}' -f $Gradle)
+}
+
+if ($RunQualityGateOnly) {
+    $Quality = Invoke-AndroidQualityGate
+    Write-Host '[POC_SIGNING_OPERATOR_QUALITY] PASS'
+    Write-Host ('Commit: {0}' -f $Quality.Commit)
+    Write-Host ('Tree:   {0}' -f $Quality.Tree)
+    return
+}
+
 if ($SecondBuildNumber -le $FirstBuildNumber) {
     throw 'SecondBuildNumber must be greater than FirstBuildNumber.'
 }
@@ -137,9 +305,9 @@ if ((-not (Test-Path -LiteralPath $IdentityPath -PathType Leaf)) -and
     )
 }
 
-# Clear stale values before prompting so the operator wrapper has one explicit
-# signing source and never restores old secrets after completion.
-Clear-SigningEnvironment
+# The complete Android quality gate is intentionally completed before any
+# signing password is requested or materialized in process memory.
+$Quality = Invoke-AndroidQualityGate
 
 $StorePasswordSecure = Read-Host 'POC keystore password' -AsSecureString
 $KeyPasswordSecure = Read-Host 'POC key password' -AsSecureString
@@ -151,6 +319,8 @@ $CertificatePath = Join-Path `
     $env:TEMP `
     ('wlb-poc-identity-' + [guid]::NewGuid().ToString('N') + '.der')
 $PasswordEnvironmentName = 'WLB_POC_PROMPT_STORE_PASSWORD_' + [guid]::NewGuid().ToString('N')
+$AcceptedDirectories = @()
+$WrapperComplete = $false
 $IdentityWasCreated = $false
 
 try {
@@ -208,6 +378,11 @@ try {
         $ExpectedCertificateSha256 = $ObservedCertificateSha256
     }
 
+    Assert-Provenance `
+        -Commit $Quality.Commit `
+        -Tree $Quality.Tree `
+        -Stage 'immediately before signed POC packaging'
+
     [Environment]::SetEnvironmentVariable('WLB_POC_KEYSTORE_PATH', $KeystorePath, 'Process')
     [Environment]::SetEnvironmentVariable('WLB_POC_KEYSTORE_PASSWORD', $StorePasswordPlain, 'Process')
     [Environment]::SetEnvironmentVariable('WLB_POC_KEY_ALIAS', $KeyAlias, 'Process')
@@ -222,7 +397,8 @@ try {
             -File $LowLevelHelper `
             -FirstBuildNumber $FirstBuildNumber `
             -SecondBuildNumber $SecondBuildNumber `
-            -ExpectedCertificateSha256 $ExpectedCertificateSha256 2>&1)
+            -ExpectedCertificateSha256 $ExpectedCertificateSha256 `
+            -SkipQualityChecks 2>&1)
         $HelperExitCode = $LASTEXITCODE
     }
     finally {
@@ -233,54 +409,29 @@ try {
         throw 'Low-level POC signing smoke failed.'
     }
 
-    if ($InitializeSigningIdentity) {
-        $AcceptedDirectories = @()
-        foreach ($Line in $HelperOutput) {
-            $Match = [regex]::Match($Line.ToString(), '^(?:First|Second):\s+(.+)$')
-            if ($Match.Success) {
-                $AcceptedDirectories += $Match.Groups[1].Value.Trim()
-            }
-        }
-        if ($AcceptedDirectories.Count -ne 2 -and
-            (Test-Path -LiteralPath $ArtifactsRoot -PathType Container)) {
-            $AcceptedDirectories = @(
-                Get-ChildItem -LiteralPath $ArtifactsRoot -Directory -ErrorAction SilentlyContinue |
-                    Where-Object {
-                        $_.Name -match ('-poc\.({0}|{1})$' -f $FirstBuildNumber, $SecondBuildNumber)
-                    } |
-                    Select-Object -ExpandProperty FullName
-            )
-        }
-        if ($AcceptedDirectories.Count -ne 2) {
-            foreach ($Directory in $AcceptedDirectories) {
-                Remove-Item -LiteralPath $Directory -Recurse -Force -ErrorAction SilentlyContinue
-            }
-            throw 'Could not identify both accepted artifact directories for identity initialization.'
-        }
+    $AcceptedDirectories = Get-AcceptedDirectories `
+        -HelperOutput $HelperOutput `
+        -FirstNumber $FirstBuildNumber `
+        -SecondNumber $SecondBuildNumber
+    Assert-AcceptedProvenance `
+        -Directories $AcceptedDirectories `
+        -ExpectedCommit $Quality.Commit `
+        -ExpectedTree $Quality.Tree `
+        -ExpectedCertificateSha256 $ExpectedCertificateSha256
 
-        try {
-            $Identity = [ordered]@{
-                schemaVersion = 1
-                applicationId = 'bypass.whitelist'
-                certificateSha256 = $ExpectedCertificateSha256
-                androidBuildToolsVersion = $PinnedBuildToolsVersion
-                initializedAtUtc = [DateTime]::UtcNow.ToString('o')
-            }
-            Write-Utf8NoBomJson -Value $Identity -Path $IdentityPath
-            $IdentityWasCreated = $true
+    if ($InitializeSigningIdentity) {
+        $Identity = [ordered]@{
+            schemaVersion = 1
+            applicationId = 'bypass.whitelist'
+            certificateSha256 = $ExpectedCertificateSha256
+            androidBuildToolsVersion = $PinnedBuildToolsVersion
+            initializedAtUtc = [DateTime]::UtcNow.ToString('o')
         }
-        catch {
-            foreach ($Directory in $AcceptedDirectories) {
-                Remove-Item `
-                    -LiteralPath $Directory `
-                    -Recurse `
-                    -Force `
-                    -ErrorAction SilentlyContinue
-            }
-            throw
-        }
+        Write-Utf8NoBomJson -Value $Identity -Path $IdentityPath
+        $IdentityWasCreated = $true
     }
 
+    $WrapperComplete = $true
     Write-Host '[POC_SIGNING_OPERATOR_WRAPPER] PASS'
     if ($IdentityWasCreated) {
         Write-Host ('Created public signing identity: {0}' -f $IdentityPath)
@@ -288,6 +439,15 @@ try {
     }
 }
 finally {
+    if (-not $WrapperComplete) {
+        foreach ($Directory in $AcceptedDirectories) {
+            Remove-Item `
+                -LiteralPath $Directory `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
     Clear-SigningEnvironment
     [Environment]::SetEnvironmentVariable($PasswordEnvironmentName, $null, 'Process')
     if (Test-Path -LiteralPath $CertificatePath) {
