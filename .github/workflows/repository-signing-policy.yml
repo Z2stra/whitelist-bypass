@@ -39,6 +39,59 @@ jobs:
             exit 1
           fi
 
+      - name: Validate public POC signing identity when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="android-app/poc-signing-identity.json"
+          if [[ ! -e "$identity" ]]; then
+            exit 0
+          fi
+          if [[ ! -f "$identity" ]]; then
+            echo "Public POC signing identity must be a regular file"
+            exit 1
+          fi
+
+          python3 - "$identity" <<'PY'
+          import datetime as dt
+          import json
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          try:
+              raw = path.read_text(encoding="utf-8")
+              value = json.loads(raw)
+          except Exception as exc:
+              raise SystemExit(f"Invalid public POC signing identity JSON: {exc}")
+
+          expected_keys = {
+              "schemaVersion",
+              "applicationId",
+              "certificateSha256",
+              "androidBuildToolsVersion",
+              "initializedAtUtc",
+          }
+          if set(value) != expected_keys:
+              raise SystemExit("Public POC signing identity has missing or unexpected fields")
+          if value["schemaVersion"] != 1:
+              raise SystemExit("Public POC signing identity schemaVersion must be 1")
+          if value["applicationId"] != "bypass.whitelist":
+              raise SystemExit("Public POC signing identity applicationId mismatch")
+          if value["androidBuildToolsVersion"] != "36.0.0":
+              raise SystemExit("Public POC signing identity build-tools version mismatch")
+          if not re.fullmatch(r"[0-9a-f]{64}", value["certificateSha256"]):
+              raise SystemExit("Public POC signing identity certificate must be lowercase SHA-256")
+          try:
+              timestamp = value["initializedAtUtc"].replace("Z", "+00:00")
+              parsed = dt.datetime.fromisoformat(timestamp)
+          except Exception as exc:
+              raise SystemExit(f"Public POC signing identity timestamp is invalid: {exc}")
+          if parsed.tzinfo is None:
+              raise SystemExit("Public POC signing identity timestamp must contain a timezone")
+          PY
+
       - name: Verify generated build outputs stay ignored
         shell: bash
         run: |
