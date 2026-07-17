@@ -1,5 +1,6 @@
 package bypass.whitelist.ui
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -9,6 +10,7 @@ import android.widget.TextView
 import androidx.core.view.isNotEmpty
 import androidx.fragment.app.Fragment
 import bypass.whitelist.App
+import bypass.whitelist.BuildConfig
 import bypass.whitelist.R
 import bypass.whitelist.tunnel.SplitTunnelingMode
 import bypass.whitelist.tunnel.TunnelMode
@@ -16,6 +18,7 @@ import bypass.whitelist.util.Callback
 import bypass.whitelist.util.ParamCallback
 import bypass.whitelist.util.Prefs
 import bypass.whitelist.util.ThemeMode
+import bypass.whitelist.vkpoc.VkPocActivity
 import com.google.android.material.materialswitch.MaterialSwitch
 
 class SettingsScreenFragment : Fragment(R.layout.fragment_settings_screen) {
@@ -33,6 +36,9 @@ class SettingsScreenFragment : Fragment(R.layout.fragment_settings_screen) {
         root.addView(buildTunnelSection())
         root.addView(buildNetworkSection())
         root.addView(buildBehaviorSection())
+        if (BuildConfig.VK_POC_UI_ENABLED) {
+            root.addView(buildExperimentalSection())
+        }
         root.addView(buildDangerSection())
     }
 
@@ -139,6 +145,21 @@ class SettingsScreenFragment : Fragment(R.layout.fragment_settings_screen) {
         }
         addSwitchRow(card, R.drawable.ic_setting_reconnect, getString(R.string.settings_row_reconnect), getString(R.string.settings_row_reconnect_sub), Prefs.connectOnStart) { checked ->
             Prefs.connectOnStart = checked
+        }
+        return section
+    }
+
+    private fun buildExperimentalSection(): View {
+        val section = newSection(R.string.settings_section_experimental)
+        val card = section.findViewById<LinearLayout>(R.id.sectionCard)
+        addRow(
+            card = card,
+            iconRes = R.drawable.ic_radar,
+            title = getString(R.string.settings_row_vk_poc),
+            sub = getString(R.string.settings_row_vk_poc_sub),
+            trail = getString(R.string.settings_row_vk_poc_trail),
+        ) {
+            startActivity(Intent(requireContext(), VkPocActivity::class.java))
         }
         return section
     }

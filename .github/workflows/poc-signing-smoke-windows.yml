@@ -34,6 +34,12 @@ jobs:
     timeout-minutes: 90
     env:
       ANDROID_BUILD_TOOLS_VERSION: "36.0.0"
+      # Public synthetic placeholders exercise manifest/build plumbing only.
+      # They are not accepted for a physical-device or network POC.
+      WLB_VK_ID_CLIENT_ID: "1"
+      WLB_VK_ID_CLIENT_SECRET: "public-ci-placeholder-not-a-live-secret"
+      WLB_VK_POC_GROUP_ID: "1"
+      WLB_VK_ALLOW_PUBLIC_CI_PLACEHOLDER: "true"
 
     steps:
       - name: Checkout
