@@ -65,11 +65,36 @@ class VkPocSecurityStaticTest {
     fun `POC external Android identity is neutral and fixed`() {
         val buildScript = repoFile("android-app/app/build.gradle.kts").readText()
         val pocStrings = repoFile("android-app/app/src/poc/res/values/strings.xml").readText()
+        val vkConfigExample = repoFile("android-app/vk-poc.local.properties.example").readText()
+        val instrumentedTest =
+            repoFile(
+                "android-app/app/src/androidTest/java/bypass/whitelist/ExampleInstrumentedTest.kt",
+            ).readText()
 
         assertTrue(buildScript.contains("val baseApplicationId = \"app.northbridge.mobile\""))
         assertTrue(buildScript.contains("namespace = \"bypass.whitelist\""))
         assertFalse(buildScript.contains("val baseApplicationId = \"bypass.whitelist\""))
         assertTrue(pocStrings.contains("<string name=\"app_name\">Northbridge</string>"))
+        assertTrue(
+            vkConfigExample.contains(
+                "VK ID application registered for package app.northbridge.mobile",
+            ),
+        )
+        assertFalse(
+            vkConfigExample.contains(
+                "VK ID application registered for package bypass.whitelist",
+            ),
+        )
+        assertTrue(
+            instrumentedTest.contains(
+                "assertEquals(\"app.northbridge.mobile\", appContext.packageName)",
+            ),
+        )
+        assertFalse(
+            instrumentedTest.contains(
+                "assertEquals(\"bypass.whitelist\", appContext.packageName)",
+            ),
+        )
     }
 
     @Test

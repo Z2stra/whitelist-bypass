@@ -3,7 +3,7 @@
 # Copy this file to vk-poc.local.properties. The real file is ignored by Git.
 # Never commit or paste its values into logs, screenshots, issues, or reports.
 
-# VK ID application registered for package bypass.whitelist.
+# VK ID application registered for package app.northbridge.mobile.
 wlb.vk.clientId=
 wlb.vk.clientSecret=
 
