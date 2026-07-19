@@ -60,7 +60,7 @@ Constraints:
 ## Android preparation
 
 - [ ] Use a dedicated test VK account, not the operator's primary account.
-- [ ] Register the Android application for package `bypass.whitelist` and the actual POC signing certificate using official VK ID tooling.
+- [ ] Register the Android application for package `app.northbridge.mobile` and the actual POC signing certificate using official VK ID tooling.
 - [ ] Enable/allow the `messages` scope for that application in VK ID configuration.
 - [x] Keep live VK configuration outside Git through the ignored local-property/environment boundary; the operator must also keep it out of screenshots and copied logs.
 - [x] Keep the flow in an isolated debug/POC screen and make the signed `poc` artifact launcher-only.

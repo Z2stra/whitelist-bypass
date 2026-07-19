@@ -26,14 +26,21 @@
 
         <activity
             android:name=".vkpoc.VkPocActivity"
-            android:exported="true"
+            android:exported="false"
             android:screenOrientation="portrait"
-            tools:replace="android:exported">
+            tools:replace="android:exported" />
+
+        <activity-alias
+            android:name="app.northbridge.mobile.EntryActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:targetActivity="bypass.whitelist.vkpoc.VkPocActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <service
             android:name=".tunnel.TunnelVpnService"

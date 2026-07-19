@@ -1,9 +1,9 @@
 # Android POC signing and APK delivery boundary
 
-- Status: code and CI implemented; persistent-key operator acceptance still pending
+- Status: code and CI implemented; persistent key created/backed up; bootstrap public identity still pending
 - Live build type: `poc`
 - Live artifact: signed, non-debuggable APK only
-- Package ID: `bypass.whitelist`
+- Package ID: `app.northbridge.mobile`
 - Pinned verification tools: Android build-tools `36.0.0`
 
 ## 1. Trust boundary
@@ -147,15 +147,17 @@ Create the persistent key only on the trusted build machine and keep it outside
 the repository:
 
 ```powershell
-New-Item -ItemType Directory -Force D:\wlb-secrets | Out-Null
+New-Item -ItemType Directory -Force D:\northbridge-secrets | Out-Null
 
 keytool.exe -genkeypair `
   -storetype PKCS12 `
-  -keystore D:\wlb-secrets\wlb-poc.keystore `
-  -alias wlb-poc `
+  -keystore D:\northbridge-secrets\northbridge-mobile.p12 `
+  -alias northbridge-mobile `
   -keyalg RSA `
   -keysize 3072 `
-  -validity 3650
+  -sigalg SHA256withRSA `
+  -validity 10000 `
+  -dname "CN=Northbridge Mobile, OU=Mobile, O=Northbridge"
 ```
 
 Gradle and both PowerShell entrypoints canonicalize the path and reject a key
@@ -179,14 +181,22 @@ be pinned.
 First persistent-key run:
 
 ```powershell
+$ApprovedCertificateSha256 = '<64 lowercase hex from the exported public certificate>'
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\invoke-poc-signing-smoke.ps1 `
-  -KeystorePath D:\wlb-secrets\wlb-poc.keystore `
-  -KeyAlias wlb-poc `
+  -KeystorePath D:\northbridge-secrets\northbridge-mobile.p12 `
+  -KeyAlias northbridge-mobile `
+  -ExpectedCertificateSha256 $ApprovedCertificateSha256 `
   -FirstBuildNumber 1 `
   -SecondBuildNumber 2 `
   -InitializeSigningIdentity
 ```
+
+The bootstrap run fails closed unless the operator supplies the already reviewed
+public-certificate SHA-256 and the selected keystore exports that exact certificate.
+The wrapper also requires both accepted APK manifests to report the pinned
+`app.northbridge.mobile` application ID before it writes the public identity file.
 
 The wrapper creates:
 
@@ -199,7 +209,7 @@ Schema:
 ```json
 {
   "schemaVersion": 1,
-  "applicationId": "bypass.whitelist",
+  "applicationId": "app.northbridge.mobile",
   "certificateSha256": "<64 lowercase hex characters>",
   "androidBuildToolsVersion": "36.0.0",
   "initializedAtUtc": "<ISO-8601 UTC>"
@@ -244,8 +254,8 @@ new monotonically increasing numbers:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\invoke-poc-signing-smoke.ps1 `
-  -KeystorePath D:\wlb-secrets\wlb-poc.keystore `
-  -KeyAlias wlb-poc `
+  -KeystorePath D:\northbridge-secrets\northbridge-mobile.p12 `
+  -KeyAlias northbridge-mobile `
   -FirstBuildNumber 3 `
   -SecondBuildNumber 4
 ```
@@ -257,10 +267,11 @@ The wrapper/helper jointly enforce:
 3. an exclusive repository-scoped low-level helper lock;
 4. immediate rejection of a concurrent second helper;
 5. external-keystore validation;
-6. exact certificate match with the pinned identity;
-7. two numbered signed APKs;
-8. inspection with pinned `aapt` and `apksigner`;
-9. transactional pair acceptance.
+6. an operator-approved certificate SHA-256 for first identity bootstrap and exact certificate continuity afterward;
+7. one pinned `app.northbridge.mobile` identity across Gradle, both APKs, both manifests and the public identity file;
+8. exactly one neutral launcher plus built-manifest rejection of legacy components, backup and cleartext traffic;
+9. two numbered signed APKs inspected with pinned `aapt` and `apksigner`;
+10. transactional pair acceptance.
 
 Safety tests inject failures after the first move, second move and final
 validation; every failure removes all already moved directories. They also
@@ -274,10 +285,10 @@ Post-identity example:
 local-artifacts/
 └── poc-signing-smoke/
     ├── 0.3.7-poc.3/
-    │   ├── whitelist-bypass-0.3.7-poc.3.apk
+    │   ├── northbridge-mobile-0.3.7-poc.3.apk
     │   └── BUILD-MANIFEST.json
     └── 0.3.7-poc.4/
-        ├── whitelist-bypass-0.3.7-poc.4.apk
+        ├── northbridge-mobile-0.3.7-poc.4.apk
         └── BUILD-MANIFEST.json
 ```
 
@@ -286,12 +297,12 @@ Manifest schema 2:
 ```json
 {
   "schemaVersion": 2,
-  "applicationId": "bypass.whitelist",
+  "applicationId": "app.northbridge.mobile",
   "version": "0.3.7-poc.3",
   "versionCode": 3007003,
   "gitCommit": "<full commit SHA>",
   "gitTree": "<full tree SHA>",
-  "apk": "whitelist-bypass-0.3.7-poc.3.apk",
+  "apk": "northbridge-mobile-0.3.7-poc.3.apk",
   "apkSha256": "<sha256>",
   "certificateSha256": "<public certificate sha256>",
   "debuggable": false,
@@ -309,10 +320,13 @@ Use only the pair built **after** the public identity commit:
 
 ```powershell
 $Adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
-$PocFirst = '.\local-artifacts\poc-signing-smoke\0.3.7-poc.3\whitelist-bypass-0.3.7-poc.3.apk'
-$PocSecond = '.\local-artifacts\poc-signing-smoke\0.3.7-poc.4\whitelist-bypass-0.3.7-poc.4.apk'
+$PocFirst = '.\local-artifacts\poc-signing-smoke\0.3.7-poc.3\northbridge-mobile-0.3.7-poc.3.apk'
+$PocSecond = '.\local-artifacts\poc-signing-smoke\0.3.7-poc.4\northbridge-mobile-0.3.7-poc.4.apk'
 
+# Remove the historical/debug package so it cannot be mistaken for the POC app.
 & $Adb uninstall bypass.whitelist
+# Start the new neutral package from a clean state for the first persistent-key install.
+& $Adb uninstall app.northbridge.mobile
 & $Adb install $PocFirst
 if ($LASTEXITCODE -ne 0) { throw 'Initial persistent-key POC installation failed' }
 

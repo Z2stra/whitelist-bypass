@@ -22,6 +22,9 @@ All notable project changes made as part of the staged control-plane work are re
 
 ### Android
 
+- Selected and pinned the VK-facing Android identity for later registration as `app.northbridge.mobile`, added the neutral `Northbridge` POC launcher alias/label, corrected backup exclusion to the actual `app_prefs.xml` store and pinned signing/CI checks without renaming the internal Kotlin namespace.
+- Required identity bootstrap to match the operator-approved public certificate SHA-256 and derive the public application ID from both accepted APK manifests.
+- Strengthened built-APK acceptance to require exactly one neutral launcher, no legacy app/VPN components, disabled backup and disabled cleartext traffic.
 - Added an isolated official VK API PING/PONG POC surface using VK ID SDK `2.7.1`, with the normal release UI disabled, VK ID auth activities removed and a launcher-only `poc` artifact boundary.
 - Added VK ID authorization for the exact `messages` scope plus explicit refresh, logout and re-login states; missing scope or unusable refresh fails closed to a safe status instead of exposing SDK errors or token data.
 - Added official VK API `messages.send` and `messages.getHistory` POST requests to `https://api.vk.ru` with the access token in the form body and API version `5.131`, matching the already merged Creator POC contract.

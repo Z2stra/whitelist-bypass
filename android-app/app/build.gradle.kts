@@ -9,7 +9,7 @@ plugins {
 val versionMajor = 0
 val versionMinor = 3
 val versionPatch = 7
-val baseApplicationId = "bypass.whitelist"
+val baseApplicationId = "app.northbridge.mobile"
 val baseVersionName = "$versionMajor.$versionMinor.$versionPatch"
 val baseVersionCode =
     versionMajor * 100_000_000 +
