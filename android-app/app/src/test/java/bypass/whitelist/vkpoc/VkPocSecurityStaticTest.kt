@@ -30,8 +30,20 @@ class VkPocSecurityStaticTest {
         assertTrue(manifest.contains("android:fullBackupContent=\"@xml/backup_rules\""))
         assertTrue(manifest.contains("android:usesCleartextTraffic=\"false\""))
         assertFalse(manifest.contains("tools:remove=\"android:dataExtractionRules"))
-        assertTrue(manifest.contains("android:name=\".vkpoc.VkPocActivity\""))
-        assertTrue(manifest.contains("android.intent.category.LAUNCHER"))
+        val activityBlock = manifest.substringAfter("android:name=\".vkpoc.VkPocActivity\"")
+            .substringBefore("/>")
+        assertTrue(activityBlock.contains("android:exported=\"false\""))
+
+        val aliasBlock =
+            manifest.substringAfter("android:name=\"app.northbridge.mobile.EntryActivity\"")
+                .substringBefore("</activity-alias>")
+        assertTrue(aliasBlock.contains("android:exported=\"true\""))
+        assertTrue(
+            aliasBlock.contains(
+                "android:targetActivity=\"bypass.whitelist.vkpoc.VkPocActivity\"",
+            ),
+        )
+        assertTrue(aliasBlock.contains("android.intent.category.LAUNCHER"))
         listOf(
             ".MainActivity",
             ".tunnel.TunnelVpnService",
@@ -47,6 +59,17 @@ class VkPocSecurityStaticTest {
                     .contains("tools:node=\"remove\""),
             )
         }
+    }
+
+    @Test
+    fun `POC external Android identity is neutral and fixed`() {
+        val buildScript = repoFile("android-app/app/build.gradle.kts").readText()
+        val pocStrings = repoFile("android-app/app/src/poc/res/values/strings.xml").readText()
+
+        assertTrue(buildScript.contains("val baseApplicationId = \"app.northbridge.mobile\""))
+        assertTrue(buildScript.contains("namespace = \"bypass.whitelist\""))
+        assertFalse(buildScript.contains("val baseApplicationId = \"bypass.whitelist\""))
+        assertTrue(pocStrings.contains("<string name=\"app_name\">Northbridge</string>"))
     }
 
     @Test
@@ -129,7 +152,7 @@ class VkPocSecurityStaticTest {
     companion object {
         val SESSION_PREFERENCE_FILES = listOf(
             "vkid_encrypted_shared_prefs.xml",
-            "bypass.whitelist_preferences.xml",
+            "app_prefs.xml",
         )
     }
 }

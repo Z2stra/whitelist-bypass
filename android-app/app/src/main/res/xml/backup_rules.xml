@@ -4,5 +4,5 @@
          encrypted file and SDK device identity must never cross devices or be
          restored without the originating Android Keystore key. -->
     <exclude domain="sharedpref" path="vkid_encrypted_shared_prefs.xml" />
-    <exclude domain="sharedpref" path="bypass.whitelist_preferences.xml" />
+    <exclude domain="sharedpref" path="app_prefs.xml" />
 </full-backup-content>

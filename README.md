@@ -114,14 +114,17 @@ cd android-app
 For the persistent-key POC signing/update smoke on the trusted Windows build machine, use the interactive operator wrapper. It prompts for passwords without putting literal password assignments in shell history:
 
 ```powershell
+$ApprovedCertificateSha256 = '<64 lowercase hex from the exported public certificate>'
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\invoke-poc-signing-smoke.ps1 `
-  -KeystorePath D:\wlb-secrets\wlb-poc.keystore `
-  -KeyAlias wlb-poc `
+  -KeystorePath D:\northbridge-secrets\northbridge-mobile.p12 `
+  -KeyAlias northbridge-mobile `
+  -ExpectedCertificateSha256 $ApprovedCertificateSha256 `
   -InitializeSigningIdentity
 ```
 
-`-InitializeSigningIdentity` is only for the first persistent-key run. Review and commit the generated public `android-app/poc-signing-identity.json` before accepting a live bundle. Subsequent runs omit that switch. See [Android POC signing and APK delivery boundary](docs/security/android-poc-signing.md).
+`-InitializeSigningIdentity` is only for the first persistent-key run. Review and commit the generated public `android-app/poc-signing-identity.json` before accepting a live bundle. Subsequent runs omit that switch. The VK-facing POC identity to register is `app.northbridge.mobile`, with the launcher label `Northbridge`; the internal Kotlin namespace remains unchanged. See [Android POC signing and APK delivery boundary](docs/security/android-poc-signing.md). The historical `bypass.whitelist` package may coexist on a device, so remove it from the dedicated POC device before the first accepted install to avoid testing the wrong application.
 
 Do not invoke the low-level environment-only helper manually unless following the security document. Do not distribute the unsigned `release` variant. POC delivery is signed APK-only; POC AAB production is unsupported.
 

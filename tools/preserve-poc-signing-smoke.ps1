@@ -24,6 +24,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $PinnedBuildToolsVersion = '36.0.0'
+$ExpectedApplicationId = 'app.northbridge.mobile'
+$ExpectedPocLauncher = 'app.northbridge.mobile.EntryActivity'
+$ExpectedPocLabel = 'Northbridge'
 $SigningEnvironmentNames = @(
     'WLB_POC_KEYSTORE_PATH',
     'WLB_POC_KEYSTORE_PASSWORD',
@@ -399,6 +402,140 @@ function Get-ApkEvidence {
         throw ('POC APK must not be debuggable: {0}' -f $ApkPath)
     }
 
+    $ApplicationLabelMatch = [regex]::Match(
+        $BadgingText,
+        "(?m)^application-label:'([^']*)'\s*$"
+    )
+    if (-not $ApplicationLabelMatch.Success -or
+        $ApplicationLabelMatch.Groups[1].Value -ne $ExpectedPocLabel) {
+        throw ('POC APK application label mismatch: {0}' -f $ApkPath)
+    }
+
+    $ManifestTreeOutput = @(
+        Invoke-NativeCommand `
+            -Command $Aapt `
+            -Arguments @('dump', 'xmltree', $ApkPath, 'AndroidManifest.xml') `
+            -CaptureOutput
+    )
+    $ElementBlocks = @()
+    for ($Index = 0; $Index -lt $ManifestTreeOutput.Count; $Index++) {
+        $ElementMatch = [regex]::Match(
+            $ManifestTreeOutput[$Index],
+            '^(\s*)E:\s+(application|activity|activity-alias|service|provider)(?:\s|\(|$)'
+        )
+        if (-not $ElementMatch.Success) {
+            continue
+        }
+
+        $Indent = $ElementMatch.Groups[1].Value.Length
+        $EndIndex = $ManifestTreeOutput.Count
+        for ($NextIndex = $Index + 1; $NextIndex -lt $ManifestTreeOutput.Count; $NextIndex++) {
+            $NextElementMatch = [regex]::Match(
+                $ManifestTreeOutput[$NextIndex],
+                '^(\s*)E:\s+'
+            )
+            if ($NextElementMatch.Success -and
+                $NextElementMatch.Groups[1].Value.Length -le $Indent) {
+                $EndIndex = $NextIndex
+                break
+            }
+        }
+
+        $BlockText = ($ManifestTreeOutput[$Index..($EndIndex - 1)] -join "`n")
+        $NameMatch = [regex]::Match(
+            $BlockText,
+            '(?m)^\s*A:\s+android:name(?:\([^)]*\))?="([^"]+)"(?:\s|\(|$)'
+        )
+        $ElementBlocks += [pscustomobject]@{
+            ElementName = $ElementMatch.Groups[2].Value
+            AndroidName = if ($NameMatch.Success) { $NameMatch.Groups[1].Value } else { $null }
+            Text = $BlockText
+        }
+    }
+
+    $ApplicationBlocks = @($ElementBlocks | Where-Object { $_.ElementName -eq 'application' })
+    if ($ApplicationBlocks.Count -ne 1) {
+        throw ('POC APK must contain exactly one application element: {0}' -f $ApkPath)
+    }
+    $ApplicationBlock = $ApplicationBlocks[0].Text
+    if ($ApplicationBlock -notmatch '(?m)^\s*A:\s+android:allowBackup(?:\([^)]*\))?=\(type 0x12\)0x0\s*$' -or
+        $ApplicationBlock -notmatch '(?m)^\s*A:\s+android:usesCleartextTraffic(?:\([^)]*\))?=\(type 0x12\)0x0\s*$') {
+        throw ('POC APK application backup/cleartext isolation is invalid: {0}' -f $ApkPath)
+    }
+
+    $ComponentBlocks = @(
+        $ElementBlocks |
+            Where-Object { $_.ElementName -in @('activity', 'activity-alias', 'service', 'provider') }
+    )
+    foreach ($ForbiddenComponent in @(
+        'bypass.whitelist.MainActivity',
+        'bypass.whitelist.tunnel.TunnelVpnService',
+        'bypass.whitelist.tunnel.ProxyService',
+        'bypass.whitelist.tunnel.HeadlessSessionService',
+        'bypass.whitelist.tunnel.VpnTileService',
+        'androidx.core.content.FileProvider'
+    )) {
+        if ($ComponentBlocks.AndroidName -contains $ForbiddenComponent) {
+            throw ('POC APK contains a forbidden legacy component: {0}' -f $ForbiddenComponent)
+        }
+    }
+
+    $MainPattern =
+        '(?m)^\s*A:\s+android:name(?:\([^)]*\))?="android\.intent\.action\.MAIN"(?:\s|\(|$)'
+    $LauncherPattern =
+        '(?m)^\s*A:\s+android:name(?:\([^)]*\))?="android\.intent\.category\.LAUNCHER"(?:\s|\(|$)'
+    $LauncherBlocks = @(
+        $ComponentBlocks |
+            Where-Object {
+                $_.ElementName -in @('activity', 'activity-alias') -and
+                $_.Text -match $MainPattern -and
+                $_.Text -match $LauncherPattern
+            }
+    )
+    if ($LauncherBlocks.Count -ne 1 -or
+        $LauncherBlocks[0].AndroidName -ne $ExpectedPocLauncher) {
+        throw ('POC APK must expose exactly one expected launcher alias: {0}' -f $ApkPath)
+    }
+
+    $AliasBlocks = @(
+        $ComponentBlocks |
+            Where-Object {
+                $_.ElementName -eq 'activity-alias' -and
+                $_.AndroidName -eq $ExpectedPocLauncher
+            }
+    )
+    $TargetActivityName = 'bypass.whitelist.vkpoc.VkPocActivity'
+    $TargetActivityBlocks = @(
+        $ComponentBlocks |
+            Where-Object {
+                $_.ElementName -eq 'activity' -and
+                $_.AndroidName -eq $TargetActivityName
+            }
+    )
+    if ($AliasBlocks.Count -ne 1 -or $TargetActivityBlocks.Count -ne 1) {
+        throw ('POC APK launcher alias or target activity is missing/duplicated: {0}' -f $ApkPath)
+    }
+
+    $AliasBlock = $AliasBlocks[0].Text
+    $TargetActivityBlock = $TargetActivityBlocks[0].Text
+    $TargetPattern =
+        '(?m)^\s*A:\s+android:targetActivity(?:\([^)]*\))?="' +
+        [regex]::Escape($TargetActivityName) +
+        '"(?:\s|\(|$)'
+    $AliasValid =
+        $AliasBlock -match '(?m)^\s*A:\s+android:enabled(?:\([^)]*\))?=\(type 0x12\)0xffffffff\s*$' -and
+        $AliasBlock -match '(?m)^\s*A:\s+android:exported(?:\([^)]*\))?=\(type 0x12\)0xffffffff\s*$' -and
+        $AliasBlock -match '(?m)^\s*A:\s+android:label(?:\([^)]*\))?=@0x[0-9a-fA-F]+(?:\s|$)' -and
+        $AliasBlock -match $TargetPattern -and
+        $AliasBlock -match $MainPattern -and
+        $AliasBlock -match $LauncherPattern
+    if (-not $AliasValid) {
+        throw ('POC APK launcher alias attributes are invalid: {0}' -f $ApkPath)
+    }
+    if ($TargetActivityBlock -notmatch '(?m)^\s*A:\s+android:exported(?:\([^)]*\))?=\(type 0x12\)0x0\s*$') {
+        throw ('POC APK target activity must remain unexported: {0}' -f $ApkPath)
+    }
+
     $PackageLine = $BadgingOutput | Select-Object -First 1
     $PackageMatch = [regex]::Match(
         $PackageLine,
@@ -518,7 +655,7 @@ function Build-PocIntoStaging {
 
     $StagedDirectory = Join-Path $RunStagingRoot $Identity.VersionName
     New-Item -ItemType Directory -Path $StagedDirectory | Out-Null
-    $ApkName = 'whitelist-bypass-{0}.apk' -f $Identity.VersionName
+    $ApkName = 'northbridge-mobile-{0}.apk' -f $Identity.VersionName
     $StagedApk = Join-Path $StagedDirectory $ApkName
     Copy-Item -LiteralPath $MutablePocApk -Destination $StagedApk
 
@@ -754,7 +891,7 @@ if ((Test-Path -LiteralPath $PublicIdentityPath -PathType Leaf) -and
     (-not $AllowSyntheticCiCertificate)) {
     $PublicIdentity = Get-Content -LiteralPath $PublicIdentityPath -Raw | ConvertFrom-Json
     if ($PublicIdentity.schemaVersion -ne 1 -or
-        $PublicIdentity.applicationId -ne 'bypass.whitelist' -or
+        $PublicIdentity.applicationId -ne $ExpectedApplicationId -or
         $PublicIdentity.androidBuildToolsVersion -ne $PinnedBuildToolsVersion -or
         [string]$PublicIdentity.certificateSha256 -notmatch '^[0-9a-fA-F]{64}$') {
         throw 'android-app\poc-signing-identity.json has an invalid schema.'
@@ -807,6 +944,16 @@ try {
     $SourceTree = Get-CurrentTree
     $FirstIdentity = Get-PocIdentity -BuildNumber $FirstBuildNumber
     $SecondIdentity = Get-PocIdentity -BuildNumber $SecondBuildNumber
+    $PocApplicationIds = @(
+        @(
+            $FirstIdentity.ApplicationId
+            $SecondIdentity.ApplicationId
+        ) | Sort-Object -Unique
+    )
+    if ($PocApplicationIds.Count -ne 1 -or
+        $PocApplicationIds[0] -ne $ExpectedApplicationId) {
+        throw 'Gradle POC applicationId does not match the pinned external identity.'
+    }
     if ($SecondIdentity.VersionCode -le $FirstIdentity.VersionCode) {
         throw 'Second POC versionCode must be greater than the first POC versionCode.'
     }
@@ -841,7 +988,7 @@ try {
     New-Item -ItemType Directory -Path $RunStagingRoot | Out-Null
     $CertificatePath = Join-Path `
         $env:TEMP `
-        ('wlb-poc-signing-' + [guid]::NewGuid().ToString('N') + '.der')
+        ('northbridge-mobile-signing-' + [guid]::NewGuid().ToString('N') + '.der')
 
     Export-SigningCertificate `
         -Signing $Signing `

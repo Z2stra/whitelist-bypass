@@ -194,7 +194,7 @@ jobs:
             '-keyalg', 'RSA',
             '-keysize', '3072',
             '-validity', '2',
-            '-dname', 'CN=CI POC, OU=Ephemeral, O=Whitelist Bypass, L=Test, ST=Test, C=US'
+            '-dname', 'CN=Northbridge CI, OU=Ephemeral, O=Northbridge, L=Test, ST=Test, C=US'
           )
           & keytool.exe @GenerateArguments
           if ($LASTEXITCODE -ne 0) {
@@ -348,7 +348,7 @@ jobs:
               throw "Manifest schema contains missing or unexpected fields: $ManifestPath"
             }
             if ($Manifest.schemaVersion -ne 2 -or
-                $Manifest.applicationId -ne 'bypass.whitelist' -or
+                $Manifest.applicationId -ne 'app.northbridge.mobile' -or
                 $Manifest.version -ne $Item.Version -or
                 [int64]$Manifest.versionCode -ne $Item.VersionCode -or
                 $Manifest.gitCommit -ne $Commit -or

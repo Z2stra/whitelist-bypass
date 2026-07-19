@@ -77,7 +77,7 @@ jobs:
               raise SystemExit("Public POC signing identity has missing or unexpected fields")
           if value["schemaVersion"] != 1:
               raise SystemExit("Public POC signing identity schemaVersion must be 1")
-          if value["applicationId"] != "bypass.whitelist":
+          if value["applicationId"] != "app.northbridge.mobile":
               raise SystemExit("Public POC signing identity applicationId mismatch")
           if value["androidBuildToolsVersion"] != "36.0.0":
               raise SystemExit("Public POC signing identity build-tools version mismatch")

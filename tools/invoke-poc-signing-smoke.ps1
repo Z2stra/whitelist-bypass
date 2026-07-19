@@ -6,9 +6,12 @@ param(
     [ValidateRange(2, 999)]
     [int]$SecondBuildNumber = 2,
 
-    [string]$KeystorePath = 'D:\wlb-secrets\wlb-poc.keystore',
+    [string]$KeystorePath = 'D:\northbridge-secrets\northbridge-mobile.p12',
 
-    [string]$KeyAlias = 'wlb-poc',
+    [string]$KeyAlias = 'northbridge-mobile',
+
+    [ValidatePattern('^[0-9A-Fa-f]{64}$')]
+    [string]$ExpectedCertificateSha256,
 
     # First persistent-key run only. Creates a public identity file after the
     # signing smoke succeeds. That file must be reviewed and committed before
@@ -24,6 +27,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $PinnedBuildToolsVersion = '36.0.0'
+$ExpectedApplicationId = 'app.northbridge.mobile'
 $ScriptRoot = Split-Path -Parent $PSCommandPath
 $RepoRoot = (Resolve-Path (Join-Path $ScriptRoot '..')).Path
 $AndroidRoot = Join-Path $RepoRoot 'android-app'
@@ -240,26 +244,40 @@ function Assert-AcceptedProvenance {
         [Parameter(Mandatory = $true)][string[]]$Directories,
         [Parameter(Mandatory = $true)][string]$ExpectedCommit,
         [Parameter(Mandatory = $true)][string]$ExpectedTree,
-        [Parameter(Mandatory = $true)][string]$ExpectedCertificateSha256
+        [Parameter(Mandatory = $true)][string]$ExpectedCertificateSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedApplicationId
     )
 
     if ($Directories.Count -ne 2) {
         throw 'Could not identify both accepted artifact directories.'
     }
+
+    $ObservedApplicationIds = @()
     foreach ($Directory in $Directories) {
         $ManifestPath = Join-Path $Directory 'BUILD-MANIFEST.json'
         if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
             throw ('Accepted artifact manifest is missing: {0}' -f $ManifestPath)
         }
         $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+        $ManifestApplicationId = [string]$Manifest.applicationId
         if ($Manifest.schemaVersion -ne 2 -or
+            $ManifestApplicationId -ne $ExpectedApplicationId -or
             $Manifest.gitCommit -ne $ExpectedCommit -or
             $Manifest.gitTree -ne $ExpectedTree -or
             $Manifest.androidBuildToolsVersion -ne $PinnedBuildToolsVersion -or
             ([string]$Manifest.certificateSha256).ToLowerInvariant() -ne $ExpectedCertificateSha256) {
-            throw ('Accepted artifact provenance does not match the pre-prompt quality gate: {0}' -f $ManifestPath)
+            throw ('Accepted artifact identity/provenance does not match the pre-prompt quality gate: {0}' -f $ManifestPath)
         }
+        $ObservedApplicationIds += $ManifestApplicationId
     }
+
+    $UniqueApplicationIds = @($ObservedApplicationIds | Sort-Object -Unique)
+    if ($UniqueApplicationIds.Count -ne 1 -or
+        $UniqueApplicationIds[0] -ne $ExpectedApplicationId) {
+        throw 'Accepted artifact manifests do not contain one pinned applicationId.'
+    }
+
+    return $UniqueApplicationIds[0]
 }
 
 $script:Git = Get-RequiredCommandPath @('git.exe', 'git')
@@ -277,6 +295,13 @@ if ($RunQualityGateOnly) {
 
 if ($SecondBuildNumber -le $FirstBuildNumber) {
     throw 'SecondBuildNumber must be greater than FirstBuildNumber.'
+}
+if ($InitializeSigningIdentity -and
+    [string]::IsNullOrWhiteSpace($ExpectedCertificateSha256)) {
+    throw 'ExpectedCertificateSha256 is required with -InitializeSigningIdentity.'
+}
+if (-not [string]::IsNullOrWhiteSpace($ExpectedCertificateSha256)) {
+    $ExpectedCertificateSha256 = $ExpectedCertificateSha256.ToLowerInvariant()
 }
 if (-not (Test-Path -LiteralPath $LowLevelHelper -PathType Leaf)) {
     throw ('Low-level signing helper was not found: {0}' -f $LowLevelHelper)
@@ -317,7 +342,7 @@ $StorePasswordPlain = $null
 $KeyPasswordPlain = $null
 $CertificatePath = Join-Path `
     $env:TEMP `
-    ('wlb-poc-identity-' + [guid]::NewGuid().ToString('N') + '.der')
+    ('northbridge-mobile-identity-' + [guid]::NewGuid().ToString('N') + '.der')
 $PasswordEnvironmentName = 'WLB_POC_PROMPT_STORE_PASSWORD_' + [guid]::NewGuid().ToString('N')
 $AcceptedDirectories = @()
 $WrapperComplete = $false
@@ -361,21 +386,29 @@ try {
         Get-FileHash -LiteralPath $CertificatePath -Algorithm SHA256
     ).Hash.ToLowerInvariant()
 
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedCertificateSha256) -and
+        $ObservedCertificateSha256 -ne $ExpectedCertificateSha256) {
+        throw 'Configured POC keystore certificate does not match ExpectedCertificateSha256.'
+    }
+
     if (Test-Path -LiteralPath $IdentityPath -PathType Leaf) {
         $Identity = Get-Content -LiteralPath $IdentityPath -Raw | ConvertFrom-Json
         if ($Identity.schemaVersion -ne 1 -or
-            $Identity.applicationId -ne 'bypass.whitelist' -or
+            $Identity.applicationId -ne $ExpectedApplicationId -or
             $Identity.androidBuildToolsVersion -ne $PinnedBuildToolsVersion -or
             [string]$Identity.certificateSha256 -notmatch '^[0-9a-fA-F]{64}$') {
             throw 'android-app\poc-signing-identity.json has an invalid schema.'
         }
-        $ExpectedCertificateSha256 = ([string]$Identity.certificateSha256).ToLowerInvariant()
+        $CommittedCertificateSha256 =
+            ([string]$Identity.certificateSha256).ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedCertificateSha256) -and
+            $CommittedCertificateSha256 -ne $ExpectedCertificateSha256) {
+            throw 'ExpectedCertificateSha256 does not match the committed public signing identity.'
+        }
+        $ExpectedCertificateSha256 = $CommittedCertificateSha256
         if ($ObservedCertificateSha256 -ne $ExpectedCertificateSha256) {
             throw 'Configured POC keystore does not match the committed public signing identity.'
         }
-    }
-    else {
-        $ExpectedCertificateSha256 = $ObservedCertificateSha256
     }
 
     Assert-Provenance `
@@ -413,16 +446,17 @@ try {
         -HelperOutput $HelperOutput `
         -FirstNumber $FirstBuildNumber `
         -SecondNumber $SecondBuildNumber
-    Assert-AcceptedProvenance `
+    $AcceptedApplicationId = Assert-AcceptedProvenance `
         -Directories $AcceptedDirectories `
         -ExpectedCommit $Quality.Commit `
         -ExpectedTree $Quality.Tree `
-        -ExpectedCertificateSha256 $ExpectedCertificateSha256
+        -ExpectedCertificateSha256 $ExpectedCertificateSha256 `
+        -ExpectedApplicationId $ExpectedApplicationId
 
     if ($InitializeSigningIdentity) {
         $Identity = [ordered]@{
             schemaVersion = 1
-            applicationId = 'bypass.whitelist'
+            applicationId = $AcceptedApplicationId
             certificateSha256 = $ExpectedCertificateSha256
             androidBuildToolsVersion = $PinnedBuildToolsVersion
             initializedAtUtc = [DateTime]::UtcNow.ToString('o')
